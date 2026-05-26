@@ -9,6 +9,8 @@
 
 - Retrigger github pages deploy
 
+- Fix mcp publish tarball allowlist
+
 
 
 ### Chores

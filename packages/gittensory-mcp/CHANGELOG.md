@@ -3,6 +3,12 @@
 ## Unreleased
 
 
+### CI
+
+- Fix mcp publish tarball allowlist
+
+
+
 ### Features
 
 - Add public registration polish gates
