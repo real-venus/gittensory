@@ -2583,6 +2583,51 @@
               "direct_pr_no_issue_required"
             ]
           },
+          "directPrReadiness": {
+            "type": "object",
+            "properties": {
+              "ready": {
+                "type": "boolean"
+              },
+              "reasons": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "ready",
+              "reasons"
+            ]
+          },
+          "issueDiscoveryReadiness": {
+            "type": "object",
+            "properties": {
+              "ready": {
+                "type": "boolean"
+              },
+              "recommendation": {
+                "type": "string",
+                "enum": [
+                  "enabled",
+                  "recommended",
+                  "not_recommended"
+                ]
+              },
+              "reasons": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "ready",
+              "recommendation",
+              "reasons"
+            ]
+          },
           "labelPolicy": {
             "type": "object",
             "additionalProperties": {
@@ -2595,6 +2640,80 @@
               "nullable": true
             }
           },
+          "testCoverageHealth": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "gate_ready",
+                  "gate_unknown"
+                ]
+              },
+              "trustedLabelPipelineReady": {
+                "type": "boolean"
+              },
+              "checkRunMode": {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "enabled"
+                ]
+              },
+              "requiredGate": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "note": {
+                "type": "string"
+              },
+              "warnings": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "status",
+              "trustedLabelPipelineReady",
+              "checkRunMode",
+              "requiredGate",
+              "note",
+              "warnings"
+            ]
+          },
+          "queueHealth": {
+            "type": "object",
+            "properties": {
+              "level": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "critical"
+                ]
+              },
+              "burdenScore": {
+                "type": "number"
+              },
+              "reviewablePullRequests": {
+                "type": "number"
+              },
+              "summary": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "level",
+              "burdenScore",
+              "reviewablePullRequests",
+              "summary"
+            ]
+          },
           "contributorIntakeHealth": {
             "type": "object",
             "additionalProperties": {
@@ -2606,6 +2725,59 @@
             "additionalProperties": {
               "nullable": true
             }
+          },
+          "githubApp": {
+            "type": "object",
+            "properties": {
+              "installed": {
+                "type": "boolean"
+              },
+              "publicSurface": {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "comment_and_label",
+                  "comment_only",
+                  "label_only"
+                ]
+              },
+              "commentMode": {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "detected_contributors_only",
+                  "all_prs"
+                ]
+              },
+              "checkRunMode": {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "enabled"
+                ]
+              },
+              "quietByDefault": {
+                "type": "boolean"
+              },
+              "behavior": {
+                "type": "string"
+              },
+              "warnings": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "installed",
+              "publicSurface",
+              "commentMode",
+              "checkRunMode",
+              "quietByDefault",
+              "behavior",
+              "warnings"
+            ]
           },
           "blockers": {
             "type": "array",
@@ -2632,10 +2804,15 @@
           "ready",
           "recommendedRegistrationMode",
           "issuePolicy",
+          "directPrReadiness",
+          "issueDiscoveryReadiness",
           "labelPolicy",
           "maintainerCutReadiness",
+          "testCoverageHealth",
+          "queueHealth",
           "contributorIntakeHealth",
           "docsCompleteness",
+          "githubApp",
           "blockers",
           "warnings",
           "dataQuality"
@@ -2666,6 +2843,12 @@
               "nullable": true
             }
           },
+          "tradeoffs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "reasons": {
             "type": "array",
             "items": {
@@ -2691,6 +2874,7 @@
           "privateOnly",
           "current",
           "recommended",
+          "tradeoffs",
           "reasons",
           "warnings",
           "dataQuality"
