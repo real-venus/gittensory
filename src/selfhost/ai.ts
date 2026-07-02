@@ -585,6 +585,55 @@ export function createCodexAi(parentEnv: Record<string, string | undefined>, spa
   };
 }
 
+// Readiness tracking (#2497): /ready has no way to tell "every configured AI provider is unreachable" (bad
+// API key, CLI missing auth, provider outage) from healthy — a live per-request reachability check would cost
+// a real API/CLI call on every health-check tick, so instead track a consecutive-exhaustion streak here and
+// let /ready read it. A single threshold absorbs one-off transient failures (a bad request, a momentary
+// network blip) without flapping readiness; only a SUSTAINED run of total chain exhaustion degrades it.
+const AI_UNHEALTHY_FAILURE_STREAK = 3;
+let aiConsecutiveFailures = 0;
+
+/** False once the chain has exhausted every provider AI_UNHEALTHY_FAILURE_STREAK times in a row; true otherwise
+ *  (including when no AI call has happened yet, or the most recent one succeeded). */
+export function isAiProviderHealthy(): boolean {
+  return aiConsecutiveFailures < AI_UNHEALTHY_FAILURE_STREAK;
+}
+
+/** Test-only reset so streak state from one test can't leak into the next (module-level counter). */
+export function resetAiProviderHealthForTest(): void {
+  aiConsecutiveFailures = 0;
+}
+
+/** Whether a missing-CLI boot check should force /ready unhealthy: only when EVERY configured provider is
+ *  among the missing-CLI set, i.e. the whole AI_PROVIDER chain has zero chance of working -- not just one
+ *  provider within a chain that has a working fallback (another present CLI, or an HTTP-based provider,
+ *  unverifiable this cheaply at boot but not KNOWN-broken either). Flagged by the gate's own review: an
+ *  earlier version force-marked the whole probe unhealthy for ANY missing CLI, which was a false positive
+ *  for a chain like "claude-code,anthropic" where claude-code's CLI is missing but anthropic can still serve
+ *  every request via routeProviders' fallback (#2497 follow-up). Pure so the boundary is unit-testable
+ *  independent of server.ts, which has no test harness. */
+export function shouldMarkAiProviderUnhealthyAtBoot(
+  configuredProviders: readonly string[],
+  missingCliProviders: readonly string[],
+): boolean {
+  if (missingCliProviders.length === 0) return false;
+  const configured = new Set(configuredProviders);
+  if (configured.size === 0) return false;
+  const missing = new Set(missingCliProviders);
+  return [...configured].every((provider) => missing.has(provider));
+}
+
+/** Force the streak straight to the unhealthy threshold (#2497 follow-up): for a REQUIRED CLI-subscription
+ *  provider's binary missing from PATH, caught at boot (server.ts's own fail-loud CLI-presence check) --
+ *  a real, immediately-known misconfiguration that shouldn't need three real AI-call failures to surface in
+ *  /ready, unlike a bad HTTP-provider API key or an unreachable endpoint, which can only be confirmed by a
+ *  real call and so still rely on the historical streak above. Callers should gate this with
+ *  shouldMarkAiProviderUnhealthyAtBoot so a chain with a working fallback provider isn't force-marked
+ *  unhealthy just because one sibling provider's CLI is missing. */
+export function markAiProviderUnhealthyAtBoot(): void {
+  aiConsecutiveFailures = AI_UNHEALTHY_FAILURE_STREAK;
+}
+
 /** Try each provider in order until one returns; if all throw, rethrow the last error so the caller degrades
  *  (AI summary → "unavailable"; the review still runs deterministically). The fallback chain is what makes a
  *  BYOK setup robust — e.g. AI_PROVIDER="anthropic,ollama" uses the API first and a local model if it's down. */
@@ -595,13 +644,16 @@ export function createChainAi(providers: Array<{ name: string; ai: SelfHostAi }>
       const failures: Array<{ provider: string; error: string }> = [];
       for (const p of providers) {
         try {
-          return await runProviderWithOtel(p, model, options);
+          const result = await runProviderWithOtel(p, model, options);
+          aiConsecutiveFailures = 0;
+          return result;
         } catch (error) {
           lastError = error;
           failures.push({ provider: p.name, error: errorMessage(error) });
           console.error(JSON.stringify({ level: "warn", event: "selfhost_ai_provider_failed_in_chain", provider: p.name, error: errorMessage(error) }));
         }
       }
+      aiConsecutiveFailures += 1;
       console.error(
         JSON.stringify({
           level: "error",

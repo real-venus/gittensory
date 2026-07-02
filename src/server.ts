@@ -17,9 +17,13 @@ import { processJob } from "./queue/processors";
 import {
   createOpenAiCompatibleAi,
   createSelfHostAi,
+  isAiProviderHealthy,
+  markAiProviderUnhealthyAtBoot,
   resolveAiReviewerPlan,
+  resolveProviderNames,
   resolveRequiredCliProviders,
   resolveSubscriptionCliPath,
+  shouldMarkAiProviderUnhealthyAtBoot,
 } from "./selfhost/ai";
 import {
   cookieValue,
@@ -38,6 +42,7 @@ import { exportOrbBatch } from "./selfhost/orb-collector";
 import { createD1Adapter, nodeSqliteDriver } from "./selfhost/d1-adapter";
 import {
   buildHealthBody,
+  githubAppReadinessProbe,
   readiness,
   resolveHealthVersion,
   sqliteBackupAdvisory,
@@ -378,8 +383,10 @@ async function main(): Promise<void> {
   // subprocess; if the binary is absent (image built without INSTALL_AI_CLIS=true) the spawn ENOENTs and EVERY AI
   // review silently degrades to "no usable output". Shout at boot so the misconfig is obvious, never invisible.
   const pathDirs = resolveSubscriptionCliPath(process.env).split(delimiter);
+  const missingCliProviders = new Set<string>();
   for (const { provider, cli } of resolveRequiredCliProviders(process.env)) {
     if (pathDirs.some((d) => d && existsSync(join(d, cli)))) continue;
+    missingCliProviders.add(provider);
     console.error(
       JSON.stringify({
         level: "error",
@@ -389,6 +396,12 @@ async function main(): Promise<void> {
         message: `AI_PROVIDER=${process.env.AI_PROVIDER} includes ${provider} but '${cli}' is not on PATH — every ${provider} AI review will produce NO output. Rebuild the image with --build-arg INSTALL_AI_CLIS=true (or use the published image) and authenticate the CLI.`,
       }),
     );
+  }
+  // Feed into the ai_provider /ready probe (#2497) -- see shouldMarkAiProviderUnhealthyAtBoot for why this is
+  // gated on the WHOLE chain being unavailable, not just one missing CLI within a chain that has a working
+  // fallback provider.
+  if (shouldMarkAiProviderUnhealthyAtBoot(resolveProviderNames(process.env), [...missingCliProviders])) {
+    markAiProviderUnhealthyAtBoot();
   }
   // Dedicated RAG embed provider (keeps the review chain frontier-only): when AI_EMBED_BASE_URL is set, embeddings
   // route to a SEPARATE openai-compatible endpoint (e.g. ollama at http://ollama:11434/v1, model bge-m3) instead of
@@ -444,8 +457,24 @@ async function main(): Promise<void> {
   // Persist the installation-token cache in Redis so warm GitHub App tokens survive restarts/deploys and are
   // shared across replicas (the in-isolate Map otherwise re-mints — an Orb round-trip — per replica/cold start).
   const { createRedisTokenCache } = await import("./selfhost/redis-token-cache");
-  const { setInstallationTokenStore, setGitHubResponseCache } = await import("./github/app");
+  const { createAppJwt, setInstallationTokenStore, setGitHubResponseCache } = await import("./github/app");
   setInstallationTokenStore(createRedisTokenCache(redisClient));
+  // Configured AI provider: gate on the chain's own consecutive-exhaustion streak (isAiProviderHealthy) rather
+  // than a live reachability probe, which would cost a real API/CLI call on every health-check tick. Only
+  // registered when a provider is actually configured -- without AI_PROVIDER reviews run deterministically,
+  // which is not a degraded state (#2497). A missing required CLI binary is caught immediately at boot (see
+  // markAiProviderUnhealthyAtBoot above) -- for everything else (a bad HTTP-provider API key, an unreachable
+  // endpoint), the streak is historical, not live: it only updates as real review traffic exercises the
+  // chain, so a freshly booted instance with those specific misconfigurations reports healthy before its
+  // first AI call, and a fix only clears after a subsequent success, not instantly. Verifying an HTTP
+  // provider's credentials cheaply at boot would mean spending a real network call, which this probe design
+  // deliberately avoids paying on every health-check tick.
+  if (ai) {
+    readinessProbes.push({
+      name: "ai_provider",
+      check: () => Promise.resolve(isAiProviderHealthy()),
+    });
+  }
   // Enable/disable gate for the GitHub GET-response cache (dedups the ~24 reads per review); NOT a per-entry
   // TTL — each cached class (branch-protection/metadata/commit/GraphQL) resolves its own TTL env var, so the
   // value here only matters as >0 (enabled) vs 0 (disabled) (#2505).
@@ -517,6 +546,27 @@ async function main(): Promise<void> {
       ? { REVIEW_AUDIT: createFsBlobStore(process.env.REVIEW_AUDIT_DIR) }
       : {}),
   } as unknown as Env;
+
+  // GitHub App auth: a successful JWT mint proves GITHUB_APP_PRIVATE_KEY is set and parses as a valid signing
+  // key. Without this, an invalid/expired key leaves the review pipeline completely dead while /ready still
+  // reports 200 — detection otherwise requires SENTRY_DSN or grepping stdout for auth errors (#2497). The
+  // register/fail-closed decision lives in githubAppReadinessProbe (unit-tested there); withTimeout here is
+  // only the hung-mint guard shared with the other probes. Reads from `env` (not process.env) -- the SAME
+  // object createAppJwt(env) actually mints against below -- so the registration decision and the live mint
+  // can never diverge; registered here, after env is fully constructed, rather than off the raw process.env
+  // snapshot read earlier in this function (flagged by the gate's own review as a real risk: two different
+  // sources of truth for the same credential, even if they happen to agree today).
+  const githubAppProbe = githubAppReadinessProbe(
+    env.GITHUB_APP_ID,
+    env.GITHUB_APP_PRIVATE_KEY,
+    () => createAppJwt(env),
+  );
+  if (githubAppProbe) {
+    readinessProbes.push({
+      name: githubAppProbe.name,
+      check: () => withTimeout(githubAppProbe.check()),
+    });
+  }
 
   gauge("gittensory_queue_pending", () => backend.queue.size());
   gauge("gittensory_queue_dead", () => backend.queue.deadCount());

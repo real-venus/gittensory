@@ -2,7 +2,7 @@ import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { assertNoLegacySharedAiEnv, buildProvider, claudeErrorStatus, createAnthropicAi, createChainAi, createClaudeCodeAi, createCodexAi, createOpenAiCompatibleAi, createSelfHostAi, extractCliText, extractCliUsage, resolveAiReviewerPlan, resolveClaudeCliTimeoutMs, resolveCodexCliTimeoutMs, resolveCodexEffort, resolveEffort, resolveModel, resolveProviderNames, resolveRequiredCliProviders, resolveSubscriptionCliPath, redactSecrets, routeProviders, subscriptionCliEnv } from "../../src/selfhost/ai";
+import { assertNoLegacySharedAiEnv, buildProvider, claudeErrorStatus, createAnthropicAi, createChainAi, createClaudeCodeAi, createCodexAi, createOpenAiCompatibleAi, createSelfHostAi, extractCliText, extractCliUsage, isAiProviderHealthy, markAiProviderUnhealthyAtBoot, resetAiProviderHealthForTest, resolveAiReviewerPlan, resolveClaudeCliTimeoutMs, resolveCodexCliTimeoutMs, resolveCodexEffort, resolveEffort, resolveModel, resolveProviderNames, resolveRequiredCliProviders, resolveSubscriptionCliPath, redactSecrets, routeProviders, shouldMarkAiProviderUnhealthyAtBoot, subscriptionCliEnv } from "../../src/selfhost/ai";
 import { labelSelfHostReviewerModel } from "../../src/selfhost/ai-config";
 import { renderMetrics, resetMetrics } from "../../src/selfhost/metrics";
 
@@ -66,6 +66,7 @@ describe("provider-specific CLI timeouts (#selfhost — no shared timeout ambigu
 afterEach(() => {
   vi.unstubAllGlobals();
   resetMetrics();
+  resetAiProviderHealthForTest();
 });
 
 type SpawnResult = { stdout: string; code: number | null; stderr?: string };
@@ -191,6 +192,96 @@ describe("createChainAi (fallback)", () => {
     const a = { name: "a", ai: { run: async () => { throw new Error("err-a"); } } };
     const b = { name: "b", ai: { run: async () => { throw new Error("err-b"); } } };
     await expect(createChainAi([a, b]).run("m", { prompt: "x" })).rejects.toThrow(/err-b/);
+  });
+});
+
+describe("isAiProviderHealthy (readiness streak, #2497)", () => {
+  const failing = { name: "a", ai: { run: async () => { throw new Error("down"); } } };
+  const working = { name: "a", ai: { run: async () => ({ response: "ok" }) } };
+
+  it("reports healthy before any AI call has happened", () => {
+    expect(isAiProviderHealthy()).toBe(true);
+  });
+
+  it("absorbs fewer than 3 consecutive full-chain exhaustions without going unhealthy", async () => {
+    await expect(createChainAi([failing]).run("m", { prompt: "x" })).rejects.toThrow();
+    await expect(createChainAi([failing]).run("m", { prompt: "x" })).rejects.toThrow();
+    expect(isAiProviderHealthy()).toBe(true);
+  });
+
+  it("goes unhealthy after 3 consecutive full-chain exhaustions", async () => {
+    for (let i = 0; i < 3; i += 1) {
+      await expect(createChainAi([failing]).run("m", { prompt: "x" })).rejects.toThrow();
+    }
+    expect(isAiProviderHealthy()).toBe(false);
+  });
+
+  it("a success resets the streak back to healthy", async () => {
+    for (let i = 0; i < 3; i += 1) {
+      await expect(createChainAi([failing]).run("m", { prompt: "x" })).rejects.toThrow();
+    }
+    expect(isAiProviderHealthy()).toBe(false);
+
+    await expect(createChainAi([working]).run("m", { prompt: "x" })).resolves.toEqual({ response: "ok" });
+    expect(isAiProviderHealthy()).toBe(true);
+  });
+
+  it("regression: markAiProviderUnhealthyAtBoot reports unhealthy immediately, before any AI call (#2497 follow-up)", () => {
+    // The original gap: a missing required CLI binary is a real, immediately-known misconfiguration, but the
+    // pure call-streak design only reported it after 3 real (webhook-triggered) AI-call failures -- a fresh
+    // process with a broken CLI provider and no traffic yet stayed "healthy" indefinitely.
+    expect(isAiProviderHealthy()).toBe(true);
+    markAiProviderUnhealthyAtBoot();
+    expect(isAiProviderHealthy()).toBe(false);
+  });
+
+  it("a success after markAiProviderUnhealthyAtBoot still recovers the streak normally", async () => {
+    markAiProviderUnhealthyAtBoot();
+    expect(isAiProviderHealthy()).toBe(false);
+
+    await expect(createChainAi([working]).run("m", { prompt: "x" })).resolves.toEqual({ response: "ok" });
+    expect(isAiProviderHealthy()).toBe(true);
+  });
+});
+
+describe("shouldMarkAiProviderUnhealthyAtBoot (#2497 follow-up)", () => {
+  it("returns false when nothing is missing", () => {
+    expect(shouldMarkAiProviderUnhealthyAtBoot(["claude-code"], [])).toBe(false);
+  });
+
+  it("returns false when no provider is configured at all", () => {
+    expect(shouldMarkAiProviderUnhealthyAtBoot([], [])).toBe(false);
+  });
+
+  it("returns false when missingCliProviders is nonempty but nothing is actually configured (defensive branch)", () => {
+    // Shouldn't happen by construction (resolveRequiredCliProviders is derived from resolveProviderNames), but
+    // the function must not treat "some missing set exists" as "the configured chain is broken" when there is
+    // no configured chain at all -- covers the configured.size === 0 branch independently of the earlier
+    // missingCliProviders.length === 0 short-circuit.
+    expect(shouldMarkAiProviderUnhealthyAtBoot([], ["claude-code"])).toBe(false);
+  });
+
+  it("returns true for a single configured CLI provider whose CLI is missing", () => {
+    expect(shouldMarkAiProviderUnhealthyAtBoot(["claude-code"], ["claude-code"])).toBe(true);
+  });
+
+  it("regression: returns false for a mixed chain where only ONE provider's CLI is missing and a fallback exists", () => {
+    // The bug the gate's review caught: an earlier version force-marked the whole ai_provider probe
+    // unhealthy for ANY missing CLI, even when AI_PROVIDER listed a working non-CLI (or another
+    // present-CLI) fallback that routeProviders would actually fall through to.
+    expect(shouldMarkAiProviderUnhealthyAtBoot(["claude-code", "anthropic"], ["claude-code"])).toBe(false);
+  });
+
+  it("returns false for a mixed chain of two CLI providers when only one is missing", () => {
+    expect(shouldMarkAiProviderUnhealthyAtBoot(["claude-code", "codex"], ["codex"])).toBe(false);
+  });
+
+  it("returns true when EVERY configured provider is a missing CLI (the whole chain has zero chance of working)", () => {
+    expect(shouldMarkAiProviderUnhealthyAtBoot(["claude-code", "codex"], ["claude-code", "codex"])).toBe(true);
+  });
+
+  it("returns false for an HTTP-only chain, since resolveRequiredCliProviders never reports one as missing", () => {
+    expect(shouldMarkAiProviderUnhealthyAtBoot(["anthropic"], [])).toBe(false);
   });
 });
 
