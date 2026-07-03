@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  getInstallationHealth,
   listCheckSummaries,
   listContributorRepoStats,
   listIssues,
@@ -17,6 +18,7 @@ import {
   persistRepoGithubTotalsSnapshot,
   recordGitHubRateLimitObservation,
   upsertInstallation,
+  upsertInstallationHealth,
   upsertRepoSyncSegment,
   upsertRepoSyncState,
   upsertPullRequestFile,
@@ -458,6 +460,188 @@ describe("GitHub backfill", () => {
     });
     const refreshed = await refreshInstallationHealth(env);
     expect(refreshed.installations).toEqual(expect.arrayContaining([expect.objectContaining({ installationId: 124, status: "healthy" })]));
+    // The persisted authMode round-trips as "local" through the repository read path (getInstallationHealth),
+    // not just the in-memory refresh result — the same mapper the broker-mode test below exercises for "broker".
+    expect(await getInstallationHealth(env, 124)).toMatchObject({ authMode: "local" });
+  });
+
+  describe("installation health — Orb broker mode (#selfhost-runtime-drift)", () => {
+    it("reports healthy with authMode 'broker' and no fabricated missing permissions when the token broker mints successfully", async () => {
+      const env = createTestEnv({ ORB_ENROLLMENT_SECRET: "orbsec_test" }); // broker mode — no GITHUB_APP_PRIVATE_KEY
+      await upsertInstallation(env, {
+        installation: {
+          id: 900,
+          account: { login: "brokered-owner", id: 9, type: "User" },
+          repository_selection: "selected",
+        },
+      });
+      const calls: string[] = [];
+      vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+        const url = input.toString();
+        calls.push(url);
+        if (url.endsWith("/v1/orb/token")) return Response.json({ token: "ghs_brokered", installationId: 900 });
+        return new Response("not found", { status: 404 });
+      });
+
+      const result = await refreshInstallationHealth(env);
+
+      expect(result.installations[0]).toMatchObject({
+        status: "healthy",
+        authMode: "broker",
+        missingPermissions: [],
+        missingEvents: [],
+        errorSummary: undefined,
+      });
+      // Never takes the local App-JWT path (which would 404 here and throw "credentials not configured").
+      expect(calls.some((url) => url.includes("/app/installations/"))).toBe(false);
+      expect(await renderMetrics()).toContain('gittensory_installation_health_broker_probe_total{result="ok"} 1');
+      // The persisted authMode round-trips as "broker" through the repository read path (getInstallationHealth),
+      // not just the in-memory refresh result — mirrors the "local" round-trip check above.
+      expect(await getInstallationHealth(env, 900)).toMatchObject({ authMode: "broker" });
+    });
+
+    it("REGRESSION (gate finding): never reports healthy when the broker mints a token for a DIFFERENT installation than the one being refreshed", async () => {
+      const env = createTestEnv({ ORB_ENROLLMENT_SECRET: "orbsec_test" });
+      // Two local rows exist (e.g. a stale row left over from a prior re-registration), but a brokered
+      // self-host is bound to exactly ONE real installation — the broker always mints for that ONE install
+      // regardless of which local row's refresh triggered the call.
+      await upsertInstallation(env, {
+        installation: { id: 910, account: { login: "brokered-owner", id: 9, type: "User" }, repository_selection: "selected" },
+      });
+      vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+        const url = input.toString();
+        if (url.endsWith("/v1/orb/token")) return Response.json({ token: "ghs_brokered", installationId: 999 }); // NOT 910
+        return new Response("not found", { status: 404 });
+      });
+
+      const result = await refreshInstallationHealth(env);
+
+      expect(result.installations[0]?.status).toBe("needs_attention");
+      expect(result.installations[0]?.authMode).toBe("broker");
+      expect(result.installations[0]?.errorSummary).toMatch(/910/);
+      expect(await renderMetrics()).toContain('gittensory_installation_health_broker_probe_total{result="mismatched_installation"} 1');
+    });
+
+    it("REGRESSION (gate finding): a broker-mode refresh preserves the previously-persisted missingPermissions/missingEvents instead of fabricating a clean []", async () => {
+      const env = createTestEnv({ ORB_ENROLLMENT_SECRET: "orbsec_test" });
+      await upsertInstallation(env, {
+        installation: { id: 911, account: { login: "brokered-owner", id: 9, type: "User" }, repository_selection: "selected" },
+      });
+      // A prior refresh (e.g. before this install switched into broker mode, or an earlier probe) left a
+      // REAL, non-empty missing-permissions/events record — that's genuine last-known information, not a
+      // fabricated broker-mode guess, so a later broker-mode refresh must not silently erase it back to [].
+      await upsertInstallationHealth(env, {
+        installationId: 911,
+        accountLogin: "brokered-owner",
+        repositorySelection: "selected",
+        installedReposCount: 1,
+        registeredInstalledCount: 1,
+        status: "needs_attention",
+        missingPermissions: ["pull_requests"],
+        missingEvents: ["issues"],
+        permissions: {},
+        events: [],
+        checkedAt: "2026-07-01T00:00:00.000Z",
+        authMode: "local",
+      });
+      vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+        const url = input.toString();
+        if (url.endsWith("/v1/orb/token")) return Response.json({ token: "ghs_brokered", installationId: 911 });
+        return new Response("not found", { status: 404 });
+      });
+
+      const result = await refreshInstallationHealth(env);
+
+      expect(result.installations[0]).toMatchObject({
+        authMode: "broker",
+        missingPermissions: ["pull_requests"],
+        missingEvents: ["issues"],
+      });
+    });
+
+    it("reports needs_attention with a broker-specific errorSummary (not the local App-key message) when the token broker fails to mint", async () => {
+      const env = createTestEnv({ ORB_ENROLLMENT_SECRET: "orbsec_test" });
+      await upsertInstallation(env, {
+        installation: { id: 901, account: { login: "brokered-owner", id: 9, type: "User" }, repository_selection: "selected" },
+      });
+      vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+        const url = input.toString();
+        if (url.endsWith("/v1/orb/token")) return new Response("broker down", { status: 500 });
+        return new Response("not found", { status: 404 });
+      });
+
+      const result = await refreshInstallationHealth(env);
+
+      expect(result.installations[0]?.status).toBe("needs_attention");
+      expect(result.installations[0]?.authMode).toBe("broker");
+      expect(result.installations[0]?.errorSummary).toMatch(/token/i);
+      expect(result.installations[0]?.errorSummary).not.toMatch(/GitHub App credentials are not configured/);
+      expect(await renderMetrics()).toContain('gittensory_installation_health_broker_probe_total{result="failed"} 1');
+    });
+
+    it("enrichInstallationHealth's broker branch reports introspection-unavailable remediation, not fabricated grants or gaps", () => {
+      const healthy = enrichInstallationHealth({
+        installationId: 902,
+        accountLogin: "brokered-owner",
+        repositorySelection: "selected",
+        installedReposCount: 1,
+        registeredInstalledCount: 1,
+        status: "healthy",
+        missingPermissions: [],
+        missingEvents: [],
+        permissions: {},
+        events: [],
+        checkedAt: "2026-07-03T00:00:00.000Z",
+        authMode: "broker",
+      });
+      // ok is false even on a HEALTHY broker: the broker minting tokens proves reachability, never that any
+      // specific permission/event is actually granted -- there is no introspection API to confirm that today.
+      expect(healthy.permissionRemediation).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ permission: "pull_requests", currentAccess: "unavailable_in_broker_mode", ok: false }),
+        ]),
+      );
+      expect(healthy.eventRemediation).toEqual(
+        expect.arrayContaining([expect.objectContaining({ event: "issues", ok: false })]),
+      );
+      expect(healthy.repairSteps.join(" ")).toMatch(/token broker is reachable/i);
+
+      const degraded = enrichInstallationHealth({
+        installationId: 903,
+        accountLogin: "brokered-owner",
+        repositorySelection: "selected",
+        installedReposCount: 1,
+        registeredInstalledCount: 1,
+        status: "needs_attention",
+        missingPermissions: [],
+        missingEvents: [],
+        permissions: {},
+        events: [],
+        checkedAt: "2026-07-03T00:00:00.000Z",
+        errorSummary: "Token broker did not mint an installation token: 500.",
+        authMode: "broker",
+      });
+      expect(degraded.permissionRemediation.every((entry) => entry.ok === false)).toBe(true);
+      expect(degraded.repairSteps.join(" ")).toContain("Token broker did not mint an installation token: 500.");
+
+      // No errorSummary at all (e.g. the broker call itself never completed) — repairSteps still reads as a
+      // plain sentence instead of dangling on a missing colon-suffix.
+      const degradedNoSummary = enrichInstallationHealth({
+        installationId: 904,
+        accountLogin: "brokered-owner",
+        repositorySelection: "selected",
+        installedReposCount: 1,
+        registeredInstalledCount: 1,
+        status: "needs_attention",
+        missingPermissions: [],
+        missingEvents: [],
+        permissions: {},
+        events: [],
+        checkedAt: "2026-07-03T00:00:00.000Z",
+        authMode: "broker",
+      });
+      expect(degradedNoSummary.repairSteps.join(" ")).toContain("The token broker is unreachable or failing to mint installation tokens.");
+    });
   });
 
   it("normalizes stale automatic installation repository event health", () => {
@@ -473,6 +657,7 @@ describe("GitHub backfill", () => {
       permissions: { metadata: "read", pull_requests: "write", issues: "write" },
       events: ["issues", "issue_comment", "pull_request", "repository"],
       checkedAt: "2026-06-05T00:00:00.000Z",
+      authMode: "local",
     });
 
     expect(health).toMatchObject({
@@ -495,6 +680,7 @@ describe("GitHub backfill", () => {
       permissions: { metadata: "read", pull_requests: "read", issues: "write" },
       events: ["issues", "issue_comment", "pull_request", "repository"],
       checkedAt: "2026-06-05T00:00:00.000Z",
+      authMode: "local",
     });
 
     expect(health.requiredPermissions).toMatchObject({ pull_requests: "write" }); // not the baseline read
@@ -516,6 +702,7 @@ describe("GitHub backfill", () => {
       permissions: { metadata: "read", issues: "write" },
       events: ["issues", "issue_comment", "pull_request", "repository"],
       checkedAt: "2026-06-05T00:00:00.000Z",
+      authMode: "local",
     });
 
     expect(health.requiredPermissions).toMatchObject({ pull_requests: "read" });
@@ -635,6 +822,7 @@ describe("GitHub backfill", () => {
       permissions: { metadata: "read", pull_requests: "read", issues: "write" },
       events: ["issues", "issue_comment", "pull_request", "repository", "installation_repositories"],
       checkedAt: "2026-05-28T00:00:00.000Z",
+      authMode: "local",
     });
 
     expect(repair.repairSteps).toEqual(["No repair needed."]);
@@ -666,6 +854,7 @@ describe("GitHub backfill", () => {
       permissions: { metadata: "read", pull_requests: "read", issues: "write" },
       events: ["issues", "issue_comment", "pull_request", "repository", "installation_repositories"],
       checkedAt: "2026-05-28T00:00:00.000Z",
+      authMode: "local",
     });
 
     expect(repair.requiredPermissions.pull_requests).toBe("write");
@@ -702,6 +891,7 @@ describe("GitHub backfill", () => {
       permissions: { metadata: "read", pull_requests: "read", issues: "read" },
       events: ["issues", "issue_comment", "pull_request", "repository", "installation_repositories"],
       checkedAt: "2026-05-28T00:00:00.000Z",
+      authMode: "local",
     });
 
     expect(repair.modeImpacts).toEqual(
