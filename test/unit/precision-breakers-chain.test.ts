@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyPrecisionBreakers } from "../../src/queue/processors";
+import { applyPrecisionBreakers, precisionBreakerDowngradeDirections } from "../../src/queue/processors";
 import { AGENT_LABEL_CHANGES, AGENT_LABEL_NEEDS_REVIEW, AGENT_LABEL_READY, type PlannedAgentAction } from "../../src/settings/agent-actions";
 
 // The processors chaining at maybeRunAgentMaintenance:
@@ -40,5 +40,53 @@ describe("applyPrecisionBreakers — chaining the merge + close precision breake
     expect(out.some((a) => a.actionClass === "label" && a.label === AGENT_LABEL_CHANGES)).toBe(true); // KEPT
     // needs-human-review added exactly once (the second downgrade is idempotent on the label).
     expect(out.filter((a) => a.actionClass === "label" && a.label === AGENT_LABEL_NEEDS_REVIEW)).toHaveLength(1);
+  });
+});
+
+describe("precisionBreakerDowngradeDirections — bounded-cardinality breaker-downgrade observability (#terminal-outcome-audit)", () => {
+  it("empty when neither breaker is engaged (the common, byte-identical path)", () => {
+    const planned = [readyLabel, mergeAction];
+    expect(precisionBreakerDowngradeDirections(planned, applyPrecisionBreakers(planned, false, false))).toEqual([]);
+  });
+
+  it("['merge'] when the merge breaker dropped a would-merge", () => {
+    const planned = [readyLabel, mergeAction];
+    expect(precisionBreakerDowngradeDirections(planned, applyPrecisionBreakers(planned, true, false))).toEqual(["merge"]);
+  });
+
+  it("['close'] when the close breaker dropped a heuristic would-close", () => {
+    const planned = [changesLabel, heuristicClose];
+    expect(precisionBreakerDowngradeDirections(planned, applyPrecisionBreakers(planned, false, true))).toEqual(["close"]);
+  });
+
+  it("['merge', 'close'] (stable order) when both breakers downgrade in the same pass", () => {
+    const planned = [readyLabel, mergeAction, changesLabel, heuristicClose];
+    expect(precisionBreakerDowngradeDirections(planned, applyPrecisionBreakers(planned, true, true))).toEqual(["merge", "close"]);
+  });
+
+  it("empty when closeHoldOnly is engaged but the only close present is concrete-evidence-exempt (not actually downgraded)", () => {
+    const concreteClose: PlannedAgentAction = { actionClass: "close", requiresApproval: false, reason: "hard blocker", closeKind: "heuristic", closeConcreteEvidence: true };
+    const planned = [concreteClose];
+    expect(precisionBreakerDowngradeDirections(planned, applyPrecisionBreakers(planned, false, true))).toEqual([]);
+  });
+
+  it("empty when holdOnly is engaged but no merge was ever planned (nothing to downgrade)", () => {
+    const planned = [changesLabel];
+    expect(precisionBreakerDowngradeDirections(planned, applyPrecisionBreakers(planned, true, true))).toEqual([]);
+  });
+
+  // REGRESSION (gate review finding, round 2): a plan can carry TWO close actions — a KEPT deterministic close
+  // (e.g. linked-issue-hard-rule, per downgradeCloseToHold's own "when BOTH a heuristic and a deterministic
+  // close are present, drops ONLY the heuristic one" contract) alongside a DROPPED heuristic one. A coarse
+  // `!breakerOnPlan.some(actionClass === "close")` check would never fire here, since the surviving
+  // deterministic close keeps a "close" action in breakerOnPlan even though the breaker DID rewrite the plan.
+  it("['close'] when a KEPT deterministic close and a DROPPED heuristic close are both present in the same plan", () => {
+    const deterministicClose: PlannedAgentAction = { actionClass: "close", requiresApproval: false, reason: "ineligible issue", closeKind: "linked-issue-hard-rule" };
+    const planned = [deterministicClose, heuristicClose];
+    const breakerOnPlan = applyPrecisionBreakers(planned, false, true);
+    // Sanity: the deterministic close really does survive alongside the dropped heuristic one.
+    expect(breakerOnPlan.some((a) => a.actionClass === "close" && a.closeKind === "linked-issue-hard-rule")).toBe(true);
+    expect(breakerOnPlan.some((a) => a.actionClass === "close" && a.closeKind === "heuristic")).toBe(false);
+    expect(precisionBreakerDowngradeDirections(planned, breakerOnPlan)).toEqual(["close"]);
   });
 });

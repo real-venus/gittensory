@@ -1850,6 +1850,26 @@ export function applyPrecisionBreakers(
   return closeHoldOnly ? downgradeCloseToHold(afterMerge, true) : afterMerge;
 }
 
+/** PURE: which precision-breaker directions actually rewrote the plan — i.e. `planned` had a merge/close that
+ *  `breakerOnPlan` (the post-{@link applyPrecisionBreakers} result) no longer has. Extracted from the call site
+ *  so the bounded-cardinality observability counter (#terminal-outcome-audit) is unit-tested directly, the same
+ *  way applyPrecisionBreakers itself is. Returns at most one entry per direction, in a stable merge-then-close
+ *  order; empty on the common (not-engaged, or nothing downgraded) path. */
+export function precisionBreakerDowngradeDirections(planned: PlannedAgentAction[], breakerOnPlan: PlannedAgentAction[]): Array<"merge" | "close"> {
+  // Reference identity, not "is the class still present anywhere in the array": downgradeMergeToHold /
+  // downgradeCloseToHold both filter() the input (preserving object identity for every KEPT action) and only
+  // ever push brand-new label actions, so a specific planned action survives iff the SAME object reference is
+  // still in breakerOnPlan. A coarse `!breakerOnPlan.some(actionClass === "close")` check would miss a downgrade
+  // when a plan carries TWO close actions and only one (the heuristic one) is dropped — the surviving
+  // deterministic close keeps that check from ever firing even though the breaker did rewrite the plan (gate
+  // review finding, round 2).
+  const kept = new Set(breakerOnPlan);
+  const directions: Array<"merge" | "close"> = [];
+  if (planned.some((action) => action.actionClass === "merge" && !kept.has(action))) directions.push("merge");
+  if (planned.some((action) => action.actionClass === "close" && !kept.has(action))) directions.push("close");
+  return directions;
+}
+
 /**
  * Historical compatibility helper for callers/tests that still need to know whether branch-protection contexts
  * were readable. The disposition planner no longer uses this to soften red CI: any visible completed red
@@ -2358,6 +2378,13 @@ async function runAgentMaintenancePlanAndExecute(
     await isHoldOnly(env, repoFullName),
     await isCloseHoldOnly(env, repoFullName),
   );
+  // Observability (#terminal-outcome-audit): a bounded-cardinality counter (direction only — no repo/PR/reason
+  // text) so an operator can see, at a glance, how much of the plan a breaker is currently rewriting, without
+  // re-deriving it from individual PR audit rows. Fires only when the breaker actually changed something —
+  // the common (not-engaged) path increments nothing, matching every other breaker log in this codebase.
+  for (const direction of precisionBreakerDowngradeDirections(planned, breakerOnPlan)) {
+    incr("gittensory_precision_breaker_downgrades_total", { direction });
+  }
   if (breakerOnPlan.length === 0) return;
 
   // #2552 (gate review finding, round 2): force a fresh rebase + CI recheck when the base has advanced within

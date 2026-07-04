@@ -1,5 +1,5 @@
 import type { AgentActionClass, AutoMaintainPolicy, AutoMergeMethod, AutonomyPolicy } from "../types";
-import type { GateCheckConclusion } from "../rules/advisory";
+import { AI_JUDGMENT_BLOCKER_CODES, type GateCheckConclusion } from "../rules/advisory";
 import { DEFAULT_AUTO_MAINTAIN_POLICY, autonomyRequiresApproval, isActingAutonomyLevel, resolveAutonomy } from "./autonomy";
 import { isGuardrailHit } from "../signals/change-guardrail";
 import { AGENT_LABEL_PENDING_CLOSURE } from "../review/linked-issue-hard-rules";
@@ -96,6 +96,17 @@ export type PlannedAgentAction = {
   // ALWAYS set for a heuristic close (never omitted) -- see the field's doc comment on AgentPendingActionParams
   // in types.ts for why the tri-state (rather than an optional "failed") matters (#2478).
   closeRequiresCiState?: "failed" | "not_required";
+  // For a "heuristic" close: true when the close is backed by CONCRETE, non-judgment evidence — a committed
+  // secret, a failing/red CI run, a base conflict, a deterministic linked-issue-overlap duplicate, or a
+  // rule-based lane/manifest/pre-merge rejection — rather than any AI/model-derived verdict or a fuzzy score.
+  // The close-precision circuit-breaker (downgradeCloseToHold) EXEMPTS a concrete-evidence close: it only
+  // exists to catch the class of error where a heuristic call turned out to be wrong, and a committed secret
+  // or a red CI run is not a plausible false positive. An AI verdict — even a dual-model CONSENSUS — is
+  // deliberately NOT concrete: two models agreeing is still a judgment call, not deterministic evidence, and a
+  // systematically wrong AI-driven close is exactly the failure mode this breaker exists to catch (gate review
+  // finding, round 2 — an AI-only blocker must not bypass its own precision safety net). Absent/false ⇒ the
+  // close stays subject to the breaker like any other heuristic close (the conservative default).
+  closeConcreteEvidence?: boolean;
   expectedHeadSha?: string;
   // For an `approve` action: retract the bot's own prior approval instead of posting a new one — a later commit
   // no longer qualifies for approval, but the PR isn't merging or closing this pass, so the stale APPROVE
@@ -103,6 +114,51 @@ export type PlannedAgentAction = {
   // (#2254)
   dismissStaleApproval?: boolean;
 };
+
+// Gate-blocker codes backed by CONCRETE, non-judgment evidence: a committed secret, a deterministic
+// linked-issue-overlap duplicate, or a rule-based content/surface-lane or manifest/pre-merge rejection — every
+// entry here is produced by an exact match / regex / deterministic rule, never by a model's output. NO AI- or
+// model-derived code belongs in this set, no matter how the verdict was reached (including a dual-model
+// CONSENSUS): the close-precision breaker exists specifically to catch a systematically-wrong AI/heuristic
+// judgment, and an AI-only blocker that could bypass its own precision safety net would defeat the point (gate
+// review finding, round 2 — `ai_consensus_defect` was wrongly included here and has been removed; both
+// `ai_consensus_defect` and `ai_review_split` stay fully subject to the breaker, defended below by explicitly
+// excluding advisory.ts's own AI_JUDGMENT_BLOCKER_CODES so this can't silently regress). Kept here (not in
+// rules/advisory.ts) because "which findings are trustworthy enough to survive the breaker" is a
+// disposition-planning concern, not a gate-evaluation one — the set of finding codes is itself generic
+// self-host engine vocabulary (src/rules/advisory.ts), not specific to any one repository. Every entry is a
+// plain string literal, deliberately NOT imported from its producer's own exported constant (even where one
+// exists, e.g. advisory.ts's DUPLICATE_ONLY_BLOCKER_CODES / pre-merge-checks.ts's PRE_MERGE_CHECK_BLOCKING_CODE):
+// this module sits inside a real module-load cycle
+// (scoring/model.ts -> db/repositories.ts -> agent-actions.ts -> advisory.ts -> scoring/preview.ts ->
+// scoring/model.ts), and spreading/reading another module's export INTO A TOP-LEVEL ARRAY LITERAL evaluates it
+// eagerly at module-load time, before that module has necessarily finished initializing on this cycle's first
+// pass -- confirmed by a real "X is not iterable" failure when that was tried. A plain literal has no such
+// hazard. A source-text parity test in the test file below guards all nine against producer-side drift instead.
+const CONCRETE_EVIDENCE_BLOCKER_CODES = new Set<string>([
+  "secret_leak",
+  "duplicate_pr_risk",
+  "surface_lane_reject",
+  "manifest_missing_tests",
+  "manifest_linked_issue_required",
+  "pre_merge_check_required",
+  "lockfile_tamper_risk",
+  "missing_linked_issue",
+  "self_authored_linked_issue",
+]);
+
+/** True when a would-CLOSE is justified by at least one piece of concrete, non-judgment evidence: red CI, a
+ *  base conflict, a deterministic duplicate-PR link, or a gate-blocker code in {@link CONCRETE_EVIDENCE_BLOCKER_CODES}.
+ *  Mixed blockers (one concrete + one ambiguous) still count as concrete — the concrete signal alone already
+ *  justifies the close regardless of what else is present. Defensively excludes advisory.ts's own
+ *  {@link AI_JUDGMENT_BLOCKER_CODES} even though none should ever land in CONCRETE_EVIDENCE_BLOCKER_CODES — a
+ *  belt-and-suspenders guard against exactly the regression a gate review already caught once (`ai_consensus_defect`
+ *  wrongly classified as concrete). */
+function hasConcreteCloseEvidence(input: AgentActionPlanInput, ciFailed: boolean, isConflict: boolean): boolean {
+  if (ciFailed || isConflict) return true;
+  if ((input.pr.linkedDuplicateCount ?? 0) > 0) return true;
+  return (input.gateBlockerCodes ?? []).some((code) => CONCRETE_EVIDENCE_BLOCKER_CODES.has(code) && !AI_JUDGMENT_BLOCKER_CODES.has(code));
+}
 
 export type AgentActionPlanInput = {
   conclusion: GateCheckConclusion;
@@ -293,12 +349,18 @@ export function downgradeMergeToHold(planned: PlannedAgentAction[], holdOnly: bo
  * would be incoherent. So a plan whose only close is the deterministic one is returned UNCHANGED. A plan with a
  * heuristic close gets it dropped; a deterministic close present alongside is KEPT.
  *
+ * It ALSO exempts a heuristic close carrying `closeConcreteEvidence: true` (red CI, a base conflict, a
+ * committed secret, a deterministic duplicate, or another code in {@link CONCRETE_EVIDENCE_BLOCKER_CODES}):
+ * the breaker exists to catch a heuristic call that turned out to be WRONG, and concrete evidence is not the
+ * class of error it is watching for. A heuristic close with no concrete evidence (an unconfirmed AI verdict,
+ * a bare gate-verdict=failure, or a slop-score threshold) stays fully subject to the breaker.
+ *
  * The existing changes-requested label is KEPT (it correctly says the PR is not mergeable). PURE + idempotent:
- * with `closeHoldOnly` false this returns the plan UNCHANGED (the common path); with no HEURISTIC close planned
- * it is also a no-op. Only ever makes the system MORE cautious.
+ * with `closeHoldOnly` false this returns the plan UNCHANGED (the common path); with no downgradable close
+ * planned it is also a no-op. Only ever makes the system MORE cautious.
  */
 export function downgradeCloseToHold(planned: PlannedAgentAction[], closeHoldOnly: boolean): PlannedAgentAction[] {
-  const isHeuristicClose = (action: PlannedAgentAction): boolean => action.actionClass === "close" && action.closeKind === "heuristic";
+  const isHeuristicClose = (action: PlannedAgentAction): boolean => action.actionClass === "close" && action.closeKind === "heuristic" && action.closeConcreteEvidence !== true;
   if (!closeHoldOnly || !planned.some(isHeuristicClose)) return planned;
   // Drop ONLY the heuristic close(s); a deterministic linked-issue-hard-rule close (if any) is left intact.
   const next = planned.filter((action) => !isHeuristicClose(action));
@@ -719,14 +781,16 @@ export function planAgentMaintenanceActions(input: AgentActionPlanInput): Planne
     if (input.pr.slopRisk != null && input.pr.slopRisk >= slopGateMinScore) closeReasons.push(`slop score ${input.pr.slopRisk} ≥ ${slopGateMinScore}`);
     if ((input.pr.linkedDuplicateCount ?? 0) > 0) closeReasons.push("duplicate of another open PR");
     if (closeReasons.length === 0) closeReasons.push("the review gate is not satisfied");
-    // Tagged "heuristic": a verdict-driven close (gate-verdict / duplicate / slop / CI). This is the ONLY close
-    // the close-precision breaker downgrades to a hold when close precision has dropped.
+    // Tagged "heuristic": a verdict-driven close (gate-verdict / duplicate / slop / CI). The close-precision
+    // breaker downgrades this to a hold when close precision has dropped — UNLESS it is also backed by concrete,
+    // non-judgment evidence (see closeConcreteEvidence's doc comment), in which case the breaker leaves it alone.
     actions.push({
       actionClass: "close",
       requiresApproval: approval("close"),
       reason: closeReasons.join("; "),
       closeComment: closeMessage(closeReasons),
       closeKind: "heuristic",
+      closeConcreteEvidence: hasConcreteCloseEvidence(input, ciFailed, isConflict),
       // Pin like merge/approve (#2452): lets the accept-time supersede check detect a force-push after staging;
       // the executor's own step-6 live-CI re-check (#2128) separately covers the CI-driven reason above.
       ...(input.pr.headSha ? { expectedHeadSha: input.pr.headSha } : {}),
