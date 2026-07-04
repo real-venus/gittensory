@@ -16182,6 +16182,148 @@
             "in": "query"
           }
         ]
+      },
+      "delete": {
+        "responses": {
+          "200": {
+            "description": "Dead-letter jobs purged",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "nullable": true
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Insufficient app role (operator only)"
+          },
+          "501": {
+            "description": "This deployment's queue backend does not expose dead-letter admin"
+          }
+        },
+        "security": [
+          {
+            "GittensoryBearer": []
+          },
+          {
+            "GittensorySessionCookie": []
+          }
+        ]
+      }
+    },
+    "/v1/app/selfhost/queue/dead/{id}/replay": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "Job replayed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "nullable": true
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid job id"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Insufficient app role (operator only)"
+          },
+          "404": {
+            "description": "Dead-letter job not found"
+          },
+          "501": {
+            "description": "This deployment's queue backend does not expose dead-letter admin"
+          }
+        },
+        "security": [
+          {
+            "GittensoryBearer": []
+          },
+          {
+            "GittensorySessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "812"
+            },
+            "required": true,
+            "description": "Dead-letter job id.",
+            "name": "id",
+            "in": "path"
+          }
+        ]
+      }
+    },
+    "/v1/app/selfhost/queue/dead/{id}": {
+      "delete": {
+        "responses": {
+          "200": {
+            "description": "Job deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "nullable": true
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid job id"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Insufficient app role (operator only)"
+          },
+          "404": {
+            "description": "Dead-letter job not found"
+          },
+          "501": {
+            "description": "This deployment's queue backend does not expose dead-letter admin"
+          }
+        },
+        "security": [
+          {
+            "GittensoryBearer": []
+          },
+          {
+            "GittensorySessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "812"
+            },
+            "required": true,
+            "description": "Dead-letter job id.",
+            "name": "id",
+            "in": "path"
+          }
+        ]
       }
     }
   },
