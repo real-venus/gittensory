@@ -23,7 +23,7 @@ import { ensurePullRequestLabel, removePullRequestLabel } from "../github/labels
 import { closeIssue, closePullRequest, createIssueComment, createPullRequestReview, dismissLatestBotApproval, mergePullRequest, updatePullRequestBranch } from "../github/pr-actions";
 import { fetchPullRequestFreshness, pullRequestFreshnessDetail } from "../github/pr-freshness";
 import { isActingAutonomyLevel, resolveAutonomy } from "../settings/autonomy";
-import { buildAgentActionAudit, formatAgentPermissionDenial, isGlobalAgentPause, resolveAgentActionMode, resolveAgentPermissionReadiness, type AgentActionMode } from "../settings/agent-execution";
+import { boundStructuredCloseReasonsForPersistence, buildAgentActionAudit, formatAgentPermissionDenial, isGlobalAgentPause, resolveAgentActionMode, resolveAgentPermissionReadiness, type AgentActionMode } from "../settings/agent-execution";
 import type { PlannedAgentAction } from "../settings/agent-actions";
 import type { AgentActionClass, AgentPendingActionParams, AutonomyLevel, AutonomyPolicy } from "../types";
 import { errorMessage } from "../utils/json";
@@ -50,10 +50,18 @@ function boundAuditReason(detail: string): string {
   return detail.length > AUDIT_REASON_MAX_LENGTH ? `${detail.slice(0, AUDIT_REASON_MAX_LENGTH)}…` : detail;
 }
 
-function closeReasonsForAudit(action: PlannedAgentAction): string[] | undefined {
+function closeReasonsForAudit(action: PlannedAgentAction): { closeReasons: string[]; closeReasonCount: number } | undefined {
   if (action.actionClass !== "close") return undefined;
   const rawReasons = action.closeReasons?.length ? action.closeReasons : [action.reason];
-  return rawReasons.map((reason) => boundAuditReason(reason));
+  // Bound the COUNT first (a cheap slice) so the per-reason string truncation below only ever runs over the
+  // persisted subset, never a potentially unbounded array -- the ORIGINAL count is carried separately as
+  // closeReasonCount so buildAgentActionAudit can still flag truncation correctly even though closeReasons
+  // itself is already bounded by the time it gets there (#3213 review: an unbounded .map(boundAuditReason)
+  // here could exhaust Worker CPU/memory before any cap ran).
+  return {
+    closeReasons: boundStructuredCloseReasonsForPersistence(rawReasons).map((reason) => boundAuditReason(reason)),
+    closeReasonCount: rawReasons.length,
+  };
 }
 
 // The PR-visible action classes that require an elevated GitHub App write permission. Most use
@@ -238,7 +246,7 @@ export async function executeAgentMaintenanceActions(env: Env, ctx: AgentActionE
       outcomes.push({ actionClass: action.actionClass, outcome, detail: boundedDetail });
       return recordAuditEvent(
         env,
-        buildAgentActionAudit({ actionClass: action.actionClass, autonomyLevel, mode, outcome: auditOutcome, repoFullName: ctx.repoFullName, targetKey, actor: AGENT_ACTOR, reason: boundedDetail, closeReasons: closeReasonsForAudit(action) }),
+        buildAgentActionAudit({ actionClass: action.actionClass, autonomyLevel, mode, outcome: auditOutcome, repoFullName: ctx.repoFullName, targetKey, actor: AGENT_ACTOR, reason: boundedDetail, ...closeReasonsForAudit(action) }),
       );
     };
 
@@ -583,7 +591,7 @@ export async function executeIssueMaintenanceActions(env: Env, ctx: IssueActionE
       outcomes.push({ actionClass: action.actionClass, outcome, detail: boundedDetail });
       return recordAuditEvent(
         env,
-        buildAgentActionAudit({ actionClass: action.actionClass, autonomyLevel, mode, outcome: auditOutcome, repoFullName: ctx.repoFullName, targetKey, actor: AGENT_ACTOR, reason: boundedDetail, closeReasons: closeReasonsForAudit(action) }),
+        buildAgentActionAudit({ actionClass: action.actionClass, autonomyLevel, mode, outcome: auditOutcome, repoFullName: ctx.repoFullName, targetKey, actor: AGENT_ACTOR, reason: boundedDetail, ...closeReasonsForAudit(action) }),
       );
     };
 
@@ -747,7 +755,7 @@ export function actionParams(action: PlannedAgentAction): AgentPendingActionPara
     ...(action.reviewBody !== undefined ? { reviewBody: action.reviewBody } : {}),
     ...(action.mergeMethod !== undefined ? { mergeMethod: action.mergeMethod } : {}),
     ...(action.closeComment !== undefined ? { closeComment: action.closeComment } : {}),
-    ...(action.closeReasons !== undefined ? { closeReasons: action.closeReasons } : {}),
+    ...(action.closeReasons !== undefined ? { closeReasons: [...boundStructuredCloseReasonsForPersistence(action.closeReasons)] } : {}),
     ...(action.expectedHeadSha !== undefined ? { expectedHeadSha: action.expectedHeadSha } : {}),
     ...(action.dismissStaleApproval !== undefined ? { dismissStaleApproval: action.dismissStaleApproval } : {}),
     // Round-trip closeKind so a staged close's kind survives to accept-time — without it, the close-precision
