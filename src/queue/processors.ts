@@ -6153,6 +6153,10 @@ export async function runAiReviewForAdvisory(
     // (the per-repo toggle). ANDed here with the operator flag + cutover allowlist to decide whether to ASK the
     // model for line-anchored inline findings. Absent/false ⇒ the reviewer prompt is byte-identical (no findings).
     reviewInlineComments?: boolean | undefined;
+    // The inbound webhook delivery id that triggered this review (#codex-timeout-fields) — forwarded to a
+    // self-host provider's failure log purely for operator correlation; never read by any review logic. Absent
+    // (e.g. a sweep/repair fan-out with no single originating delivery, or a unit test) ⇒ the log line omits it.
+    deliveryId?: string | undefined;
   },
 ): Promise<
   | {
@@ -6380,6 +6384,7 @@ export async function runAiReviewForAdvisory(
       diff: enrichmentDiff,
       actor: args.author,
       mode: args.settings.aiReviewMode === "block" ? "block" : "advisory",
+      jobId: args.deliveryId,
       providerKey,
       grounding,
       ragContext: ragContextResult?.text,
@@ -7945,6 +7950,7 @@ async function maybePublishPrPublicSurface(
               reviewInstructions,
               reviewExcludePaths,
               reviewInlineComments,
+              deliveryId: webhook.deliveryId,
             });
             // `persistable === false` (only the lock-contention placeholder — see runAiReviewForAdvisory's return
             // type doc comment) is excluded from EVERY write, not just the durable one: it describes a transient
