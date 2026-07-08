@@ -6921,8 +6921,10 @@ export async function runAiReviewForAdvisory(
     // positively scope the AI review. Empty ⇒ every non-excluded file is reviewed (byte-identical). Gate unaffected.
     reviewPathFilters?: string[] | undefined;
     // `.gittensory.yml` review.inline_comments (#inline-comments), resolved by the caller from the cached manifest
-    // (the per-repo toggle). ANDed here with the operator flag + cutover allowlist to decide whether to ASK the
-    // model for line-anchored inline findings. Absent/false ⇒ the reviewer prompt is byte-identical (no findings).
+    // (the per-repo toggle). Precedence (#4099): the operator flag is a master kill-switch, never bypassable by
+    // config; an explicit true/false here now fully controls the feature, bypassing the cutover allowlist; unset
+    // stays byte-identical to every repo's behavior before this change (the allowlist alone was never sufficient
+    // on its own). Absent ⇒ the reviewer prompt is byte-identical (no findings) for every repo untouched by this.
     reviewInlineComments?: boolean | undefined;
     // `.gittensory.yml` review.finding_categories (#1958), resolved by the caller from the cached manifest. ANDed
     // here with reviewInlineComments (a category has nothing to categorize without an inline finding) to decide

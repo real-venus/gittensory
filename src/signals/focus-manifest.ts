@@ -249,7 +249,9 @@ export function composeManifestReviewInstructions(instructions: string | null, t
  *  (#review-profile / #review-tone / #review-security-focus / #review-path-instructions / #review-exclude-paths / #2043 / #selfhost-ai-model-override / #1956) */
 export function resolveReviewPromptOverrides(manifest: FocusManifest | null): { profile: ReviewProfile | null; tone: string | null; securityFocus: boolean; inlineComments: boolean; suggestions: boolean; changedFilesSummary: boolean; effortScore: boolean; impactMap: boolean; cultureProfile: boolean; findingCategories: boolean; inlineCommentsPerCategory: number | null; minFindingSeverity: ReviewFindingSeverity | null; maxFindings: MaxFindingsConfig; commentVerbosity: CommentVerbosity | null; pathInstructions: ReviewPathInstruction[]; instructions: string | null; excludePaths: string[]; pathFilters: string[]; selfHostAiModel: SelfHostAiModelConfig } {
   // inlineComments resolves to a strict boolean — true ONLY when the manifest explicitly set review.inline_comments:
-  // true; null/false/absent ⇒ false. The caller ANDs this per-repo toggle with the operator flag + cutover allowlist.
+  // true; null/false/absent ⇒ false. `shouldRequestInlineFindings` (#4099) only ever checks `=== true`, so null
+  // and false are functionally identical to it — collapsing here (matching every sibling field below) is simpler
+  // than plumbing a tri-state through for a distinction nothing downstream actually consumes.
   // securityFocus resolves the same way — true ONLY when the manifest explicitly set review.security_focus: true.
   // suggestions resolves the same way (#1956) — the caller further ANDs it with the already-resolved
   // inlineComments gate, since a suggestion has nothing to attach to without an inline comment.
