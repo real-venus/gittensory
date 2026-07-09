@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { isRecapEnabled, resolveMaintainerRecapManifestOverride, runMaintainerRecapJob, shouldFireMaintainerRecap } from "../../src/review/maintainer-recap-wire";
+import type { MaintainerRecapJobSkipped } from "../../src/review/maintainer-recap-wire";
 import type { RunMaintainerRecapResult } from "../../src/services/maintainer-recap";
 import { updatePullRequestSlopAssessment, upsertPullRequestFromGitHub, upsertRepositorySettings } from "../../src/db/repositories";
 import { upsertRepoFocusManifest } from "../../src/signals/focus-manifest-loader";
@@ -9,7 +10,9 @@ const SELF_REPO = "JSONbored/gittensory";
 
 const HOOK = "https://discord.com/api/webhooks/123/abc";
 
-function ranRecap(result: RunMaintainerRecapResult): Extract<RunMaintainerRecapResult, { skipped: false }> {
+function ranRecap(
+  result: MaintainerRecapJobSkipped | RunMaintainerRecapResult,
+): Extract<RunMaintainerRecapResult, { skipped: false }> {
   expect(result.skipped).toBe(false);
   if (result.skipped) throw new Error("expected recap job to run");
   return result;
