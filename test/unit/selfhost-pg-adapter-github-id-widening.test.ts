@@ -13,7 +13,7 @@ function mockDb(execImpl: (sql: string) => Promise<unknown>): D1Database {
 describe("GITHUB_ID_BIGINT_WIDENING_SQL (#selfhost-github-id-overflow)", () => {
   it("widens every known GitHub-native-id column to bigint, one ALTER per statement", () => {
     const statements = GITHUB_ID_BIGINT_WIDENING_SQL.split(";").map((s) => s.trim()).filter(Boolean);
-    expect(statements.length).toBeGreaterThanOrEqual(18);
+    expect(statements.length).toBeGreaterThanOrEqual(20);
     for (const statement of statements) {
       expect(statement.toUpperCase()).toMatch(/^ALTER TABLE \w+ ALTER COLUMN \w+ TYPE bigint$/i);
     }
@@ -22,6 +22,11 @@ describe("GITHUB_ID_BIGINT_WIDENING_SQL (#selfhost-github-id-overflow)", () => {
   it("covers the column that was seen actively overflowing in production (request/response comment ids)", () => {
     expect(GITHUB_ID_BIGINT_WIDENING_SQL).toContain("ALTER TABLE github_agent_command_answers ALTER COLUMN request_comment_id TYPE bigint");
     expect(GITHUB_ID_BIGINT_WIDENING_SQL).toContain("ALTER TABLE github_agent_command_answers ALTER COLUMN response_comment_id TYPE bigint");
+  });
+
+  it("covers the two columns found via the live-schema sweep (added by later ALTER TABLE ADD COLUMN migrations, not the original CREATE TABLE statements)", () => {
+    expect(GITHUB_ID_BIGINT_WIDENING_SQL).toContain("ALTER TABLE installations ALTER COLUMN app_id TYPE bigint");
+    expect(GITHUB_ID_BIGINT_WIDENING_SQL).toContain("ALTER TABLE orb_github_installations ALTER COLUMN account_id TYPE bigint");
   });
 
   it("is additive-only DDL, never destructive", () => {

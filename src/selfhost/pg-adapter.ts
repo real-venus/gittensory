@@ -138,6 +138,7 @@ export async function tuneGithubRateLimitObservationsAutovacuum(db: D1Database):
 export const GITHUB_ID_BIGINT_WIDENING_SQL = [
   "ALTER TABLE installations ALTER COLUMN id TYPE bigint",
   "ALTER TABLE installations ALTER COLUMN account_id TYPE bigint",
+  "ALTER TABLE installations ALTER COLUMN app_id TYPE bigint",
   "ALTER TABLE repositories ALTER COLUMN installation_id TYPE bigint",
   "ALTER TABLE advisories ALTER COLUMN check_run_id TYPE bigint",
   "ALTER TABLE webhook_events ALTER COLUMN installation_id TYPE bigint",
@@ -149,6 +150,7 @@ export const GITHUB_ID_BIGINT_WIDENING_SQL = [
   "ALTER TABLE review_targets ALTER COLUMN installation_id TYPE bigint",
   "ALTER TABLE orb_webhook_events ALTER COLUMN installation_id TYPE bigint",
   "ALTER TABLE orb_github_installations ALTER COLUMN installation_id TYPE bigint",
+  "ALTER TABLE orb_github_installations ALTER COLUMN account_id TYPE bigint",
   "ALTER TABLE orb_pr_outcomes ALTER COLUMN installation_id TYPE bigint",
   "ALTER TABLE orb_enrollments ALTER COLUMN installation_id TYPE bigint",
   "ALTER TABLE orb_enrollments ALTER COLUMN maintainer_github_id TYPE bigint",
@@ -160,10 +162,10 @@ export const GITHUB_ID_BIGINT_WIDENING_SQL = [
  *  mirroring tuneGithubRateLimitObservationsAutovacuum's shape exactly. Must run AFTER migrations (every table
  *  above has to exist by then, so a mid-batch "relation does not exist" is not a realistic failure mode here);
  *  best-effort by design -- a failure here must not stop the self-host from booting. Postgres's simple-query
- *  protocol runs this whole multi-statement string as one implicit transaction, so either all 19 ALTERs commit
- *  together or (on any single failure) none do -- fine given every ALTER is independently idempotent and this
- *  reruns unconditionally on every boot: a failed attempt just retries whole next boot instead of leaving a
- *  partially-widened, inconsistent state. */
+ *  protocol runs this whole multi-statement string as one implicit transaction, so either every ALTER in the
+ *  list commits together or (on any single failure) none do -- fine given each ALTER is independently
+ *  idempotent and this reruns unconditionally on every boot: a failed attempt just retries the whole batch
+ *  next boot instead of leaving a partially-widened, inconsistent state. */
 export async function widenGithubIdColumnsToBigint(db: D1Database): Promise<void> {
   await db.exec(GITHUB_ID_BIGINT_WIDENING_SQL).catch((error: unknown) => {
     console.error(
