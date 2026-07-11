@@ -105,6 +105,38 @@ describe("export-d1-core buildTableExport + manifest", () => {
     expect(buildTableExport("d1_migrations", [{ id: 1 }])).toBeNull();
   });
 
+  it("excludes the private gate calibration ledger from self-host exports (regression)", () => {
+    const out = buildTableExport("predicted_gate_calibration_ledger", [
+      {
+        login: "alice",
+        project: "owner/repo",
+        target_id: "owner/repo#1",
+        predicted_action: "merge",
+        real_decision: "hold",
+        agreed: 0,
+      },
+    ]);
+
+    expect(EXCLUDED_TABLES.has("predicted_gate_calibration_ledger")).toBe(true);
+    expect(out).toBeNull();
+  });
+
+  it("excludes the login-keyed predicted-gate-calls ledger from self-host exports (regression)", () => {
+    const out = buildTableExport("predicted_gate_calls", [
+      {
+        id: "1",
+        login: "alice",
+        project: "owner/repo",
+        predicted_action: "merge",
+        conclusion: "success",
+        reason_code: null,
+      },
+    ]);
+
+    expect(EXCLUDED_TABLES.has("predicted_gate_calls")).toBe(true);
+    expect(out).toBeNull();
+  });
+
   it("redacts + checksums + counts rows for an exported table", () => {
     const out = buildTableExport("auth_sessions", [{ id: 1, token_hash: "h1" }, { id: 2, token_hash: "h2" }]);
     expect(out).not.toBeNull();
