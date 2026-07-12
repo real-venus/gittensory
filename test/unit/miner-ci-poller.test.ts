@@ -68,6 +68,28 @@ describe("miner CI check-run poller (#2323)", () => {
     ).toBe(true);
   });
 
+  it("retries a transient 5xx from GitHub during the poll and completes (#4829)", async () => {
+    let checkRunsAttempts = 0;
+    const fetchFn = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/repos/acme/widgets/pulls/42")) return prResponse("head-sha");
+      if (url.includes("/check-runs")) {
+        checkRunsAttempts += 1;
+        if (checkRunsAttempts === 1) return jsonResponse({}, { status: 503 }); // a brief transient server error
+        return checksResponse([checkRun("validate", "completed", "success")]);
+      }
+      return jsonResponse({}, { status: 404 });
+    });
+    const result = await pollCheckRuns("acme/widgets", 42, {
+      apiBaseUrl: API,
+      githubToken: "github-token",
+      fetchFn,
+      sleepFn: () => Promise.resolve(), // no real backoff delay in the test
+    });
+    expect(checkRunsAttempts).toBe(2); // the 503 was retried, then succeeded
+    expect(result.conclusion).toBe("success"); // the poll completed despite the transient 5xx
+  });
+
   it("rejects untrusted apiBaseUrl values before any token-bearing request", async () => {
     const fetchFn = vi.fn();
     for (const apiBaseUrl of [

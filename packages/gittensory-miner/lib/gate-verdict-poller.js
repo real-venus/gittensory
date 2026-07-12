@@ -10,6 +10,7 @@
 // gate verdict are two different signals a caller can record independently.
 //
 // Fully testable via injected `fetchFn`/`sleepFn` (mirrors `ci-poller.js`) — no real network in tests.
+import { fetchWithRetry } from "./http-retry.js";
 
 /** The typed gate verdicts, decided ones first, `pending` (not-yet-decided) last. */
 export const GATE_VERDICTS = Object.freeze(["merge", "close", "hold", "pending"]);
@@ -86,7 +87,8 @@ export async function pollGateVerdict(url, options = {}) {
 
   let latest = { verdict: "pending", disposition: null, attempts: 0, body: null };
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const response = await fetchFn(url, { headers });
+    // Retry transient network errors / 5xx around this single call (#4829), distinct from the pending-retry loop.
+    const response = await fetchWithRetry(fetchFn, url, { headers }, { sleepFn });
     if (!response || !response.ok) throw new Error(`gate_verdict_http_${response ? response.status : "error"}`);
     const body = await response.json();
     const disposition = readGateDisposition(body);

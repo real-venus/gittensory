@@ -1,3 +1,5 @@
+import { fetchWithRetry } from "./http-retry.js";
+
 const defaultApiBaseUrl = "https://api.github.com";
 const defaultMinIntervalMs = 60_000;
 const defaultMaxIntervalMs = 5 * 60_000;
@@ -82,10 +84,14 @@ function githubError(response, payload) {
 }
 
 async function githubGetJsonResponse(url, options) {
-  const response = await options.fetchFn(url, {
-    method: "GET",
-    headers: githubHeaders(options.githubToken),
-  });
+  // Retry transient network errors / 5xx around this single call (#4829), distinct from the poller's own
+  // pending-retry loop; the poller's injected sleepFn keeps tests instant.
+  const response = await fetchWithRetry(
+    options.fetchFn,
+    url,
+    { method: "GET", headers: githubHeaders(options.githubToken) },
+    { sleepFn: options.sleepFn },
+  );
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
     throw githubError(response, payload);
