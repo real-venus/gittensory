@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { CODING_AGENT_DRIVER_CONFIG_ENV, resolveFirstConfiguredCodingAgentDriverName } from "@jsonbored/gittensory-engine";
+import { CODING_AGENT_DRIVER_CONFIG_ENV, parseMinerGoalSpecContent, resolveFirstConfiguredCodingAgentDriverName } from "@jsonbored/gittensory-engine";
 import {
   checkClaudeCliPresent,
   checkCodexCliPresent,
@@ -11,7 +11,7 @@ import {
   findExecutableOnPath,
 } from "./laptop-init.js";
 import { resolveMinerVersion } from "./version.js";
-import { checkStoreIntegrity } from "./store-maintenance.js";
+import { checkStoreIntegrity, describeError } from "./store-maintenance.js";
 import { resolveEventLedgerDbPath } from "./event-ledger.js";
 import { resolveGovernorLedgerDbPath } from "./governor-ledger.js";
 import { resolvePredictionLedgerDbPath } from "./prediction-ledger.js";
@@ -294,9 +294,29 @@ function storeIntegrityChecks(env) {
   return stores.map(([name, dbPath]) => checkStoreIntegrity(`store-integrity:${name}`, dbPath));
 }
 
+/** Validate the discovered `.gittensory-miner` config's CONTENT (#4873), not just its path: parse it with the
+ *  tolerant goal-spec parser and surface its warnings, so a malformed config is flagged by `doctor` rather than
+ *  silently degrading to defaults. No config file is fine (defaults apply); a read failure is reported. `readImpl`
+ *  is injectable for tests. */
+export function checkConfigContent(cwd, readImpl = readFileSync) {
+  const configPath = discoverConfigFile(cwd);
+  if (!configPath) {
+    return { name: "config-content", ok: true, detail: "no .gittensory-miner config found (using defaults)" };
+  }
+  let warnings;
+  try {
+    warnings = parseMinerGoalSpecContent(readImpl(configPath, "utf8")).warnings;
+  } catch (error) {
+    return { name: "config-content", ok: false, detail: `${configPath}: ${describeError(error)}` };
+  }
+  return warnings.length === 0
+    ? { name: "config-content", ok: true, detail: `${configPath}: valid` }
+    : { name: "config-content", ok: false, detail: `${configPath}: ${warnings.join("; ")}` };
+}
+
 /** Run the doctor checks. Returns an array of { name, ok, detail }; only writes a transient probe in the state dir,
  *  never touches the network. */
-export function runDoctorChecks(env = process.env) {
+export function runDoctorChecks(env = process.env, cwd = process.cwd()) {
   const nodeMajor = Number(process.versions.node.split(".")[0]);
   const requiredMajor = requiredNodeMajor();
   const engineVersion = readEngineVersion();
@@ -317,12 +337,13 @@ export function runDoctorChecks(env = process.env) {
     checkDockerPresent(),
     checkClaudeCliPresent({ env }),
     checkCodexCliPresent({ env }),
+    checkConfigContent(cwd),
     ...storeIntegrityChecks(env),
   ];
 }
 
-export function runDoctor(args = [], env = process.env) {
-  const checks = runDoctorChecks(env);
+export function runDoctor(args = [], env = process.env, cwd = process.cwd()) {
+  const checks = runDoctorChecks(env, cwd);
   const failed = checks.filter((check) => !check.ok);
   if (args.includes("--json")) {
     console.log(JSON.stringify({ ok: failed.length === 0, checks }, null, 2));
