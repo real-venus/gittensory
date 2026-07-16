@@ -18,11 +18,51 @@ import {
   SHADOW_PROMOTION_MIN_DECIDED,
   type StorageEnv,
   type StorageLike,
+  toLiveGateThresholdFields,
+  authoritativeGateOverride,
   type TunableOverride,
   writeLiveOverride,
   writeShadowOverride,
 } from "../../src/review/auto-apply";
 import type { TuningRec } from "../../src/review/auto-tune";
+
+describe("live gate threshold projection (#6486)", () => {
+  it("prefers live over shadow and projects snake_case fields only", () => {
+    const live = { confidenceFloor: 0.9, scopeCap: { files: 10, lines: 300 } };
+    const shadow = { override: { confidenceFloor: 0.5 }, validatedUntil: "2099-01-01T00:00:00.000Z" };
+    expect(authoritativeGateOverride(live, shadow)).toEqual(live);
+    expect(toLiveGateThresholdFields(live)).toEqual({
+      confidence_floor: 0.9,
+      scope_cap_files: 10,
+      scope_cap_lines: 300,
+    });
+  });
+
+  it("falls through to shadow when live is absent, and returns null when neither is active", () => {
+    const shadow = { override: { confidenceFloor: 0.7 }, validatedUntil: null };
+    expect(toLiveGateThresholdFields(authoritativeGateOverride(null, shadow))).toEqual({
+      confidence_floor: 0.7,
+      scope_cap_files: null,
+      scope_cap_lines: null,
+    });
+    expect(toLiveGateThresholdFields(authoritativeGateOverride(null, null))).toBeNull();
+    expect(toLiveGateThresholdFields(null)).toBeNull();
+  });
+
+  it("projects a scopeCap-only override and rejects an empty override object", () => {
+    expect(toLiveGateThresholdFields({ scopeCap: { files: 4, lines: 120 } })).toEqual({
+      confidence_floor: null,
+      scope_cap_files: 4,
+      scope_cap_lines: 120,
+    });
+    expect(toLiveGateThresholdFields({ confidenceFloor: 0.81 })).toEqual({
+      confidence_floor: 0.81,
+      scope_cap_files: null,
+      scope_cap_lines: null,
+    });
+    expect(toLiveGateThresholdFields({})).toBeNull();
+  });
+});
 
 describe("rowToOverride (#273 — D1 row → validated override)", () => {
   it("maps a full row", () => {

@@ -234,6 +234,31 @@ export interface ShadowOverride {
   validatedUntil: string | null;
 }
 
+/** Field-limited AMS/MCP payload for live gate thresholds (#6486). Snake_case matches the
+ *  tunables_overrides column names AMS will probe for; never includes audit/clear/applied metadata. */
+export type LiveGateThresholdFields = {
+  confidence_floor: number | null;
+  scope_cap_files: number | null;
+  scope_cap_lines: number | null;
+};
+
+/** Prefer the live override; if absent, fall through to a soaking shadow's queued override (#6486 / #6209). */
+export function authoritativeGateOverride(live: TunableOverride | null, shadow: ShadowOverride | null): TunableOverride | null {
+  if (live) return live;
+  if (shadow) return shadow.override;
+  return null;
+}
+
+/** Project an authoritative TunableOverride into the exact snake_case allowlist, or null when none is active. */
+export function toLiveGateThresholdFields(override: TunableOverride | null): LiveGateThresholdFields | null {
+  if (!override) return null;
+  const confidence_floor = override.confidenceFloor === undefined ? null : override.confidenceFloor;
+  const scope_cap_files = override.scopeCap === undefined ? null : override.scopeCap.files;
+  const scope_cap_lines = override.scopeCap === undefined ? null : override.scopeCap.lines;
+  if (confidence_floor === null && scope_cap_files === null && scope_cap_lines === null) return null;
+  return { confidence_floor, scope_cap_files, scope_cap_lines };
+}
+
 /** Internal: raw row fetch shared by loadShadowOverride + writeShadowOverride, so a write can preserve the
  *  existing clear_at column (ShadowOverride, loadShadowOverride's public return, doesn't carry clear_at).
  *  Fail-safe: null on a DB blip. */
