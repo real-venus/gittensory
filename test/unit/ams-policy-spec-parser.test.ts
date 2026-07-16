@@ -42,6 +42,7 @@ describe("AmsPolicySpec parser (#5132)", () => {
       convergenceThresholds: { maxConsecutiveFailures: 5, maxReenqueues: 2 },
       maxIterations: 5,
       maxTurnsPerIteration: 10,
+      selfLoopAutonomy: "observe",
     });
     expect(parsed.present).toBe(true);
     expect(parsed.spec).toEqual({
@@ -51,6 +52,7 @@ describe("AmsPolicySpec parser (#5132)", () => {
       convergenceThresholds: { maxConsecutiveFailures: 5, maxReenqueues: 2 },
       maxIterations: 5,
       maxTurnsPerIteration: 10,
+      selfLoopAutonomy: "observe",
     });
     expect(parsed.warnings).toEqual([]);
   });
@@ -79,6 +81,22 @@ describe("AmsPolicySpec parser (#5132)", () => {
     expect(parsed.present).toBe(false);
     expect(parsed.spec).toEqual(DEFAULT_AMS_POLICY_SPEC);
     expect(parsed.warnings.join(" ")).toMatch(/no recognized non-default policy fields/i);
+  });
+
+  it("selfLoopAutonomy: accepts observe/auto_with_approval/auto, defaults to auto, rejects other values, and null/undefined fall back silently (#6559)", () => {
+    expect(parseAmsPolicySpec({ selfLoopAutonomy: "observe" }).spec.selfLoopAutonomy).toBe("observe");
+    expect(parseAmsPolicySpec({ selfLoopAutonomy: "auto_with_approval" }).spec.selfLoopAutonomy).toBe("auto_with_approval");
+    expect(parseAmsPolicySpec({ selfLoopAutonomy: "auto", submissionMode: "enforce" }).spec.selfLoopAutonomy).toBe("auto");
+    // A config setting only selfLoopAutonomy to a non-default value is recognized as present (not silently dropped).
+    expect(parseAmsPolicySpec({ selfLoopAutonomy: "observe" }).present).toBe(true);
+    // Default is "auto" (deliberate deviation from settings/autonomy's "observe" floor, #6060); absent field falls back.
+    expect(DEFAULT_AMS_POLICY_SPEC.selfLoopAutonomy).toBe("auto");
+    expect(parseAmsPolicySpec({ submissionMode: "enforce" }).spec.selfLoopAutonomy).toBe("auto");
+    // Invalid value → warning + default; null/undefined → silent fallback.
+    const invalid = parseAmsPolicySpec({ selfLoopAutonomy: "bogus" });
+    expect(invalid.spec.selfLoopAutonomy).toBe("auto");
+    expect(invalid.warnings.join(" ")).toMatch(/selfLoopAutonomy/i);
+    expect(parseAmsPolicySpec({ selfLoopAutonomy: null, submissionMode: "enforce" }).warnings.join(" ")).not.toMatch(/selfLoopAutonomy/i);
   });
 
   it("submissionMode: accepts observe/enforce, rejects other values, and null/undefined fall back silently", () => {

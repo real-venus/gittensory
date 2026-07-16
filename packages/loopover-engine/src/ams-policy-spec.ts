@@ -1,6 +1,7 @@
 import { parse as parseYaml } from "yaml";
 
 import { DEFAULT_PORTFOLIO_CONVERGENCE_THRESHOLDS, type PortfolioConvergenceThresholds } from "./portfolio/non-convergence.js";
+import type { AutonomyLevel } from "./types/manifest-deps-types.js";
 
 // AmsPolicySpec (#5132, Wave 3.5 follow-up). The type surface for `.loopover-ams.yml` -- the OPERATOR's own
 // execution-risk policy for their miner (AMS: the autonomous mining system this file's fields configure), as
@@ -51,6 +52,11 @@ export type AmsPolicySpec = {
   /** Per-iteration turn budget passed to the coding-agent driver (IterateLoopInput.maxTurnsPerIteration).
    *  Default: 6. */
   maxTurnsPerIteration: number;
+  /** Autonomy dial gating the iterate-loop's self-directed pass->handoff transition (#6060). Default: "auto"
+   *  (unchanged pass->handoff) -- a deliberate deviation from settings/autonomy.ts's "observe" floor, since an
+   *  operator's own local `.loopover-ams.yml` opting into self-loop mining is itself the consent this dial would
+   *  otherwise gate. Parse-only today; decideNextAction consumes it separately (#6560). */
+  selfLoopAutonomy: AutonomyLevel;
 };
 
 /** The tolerant parser result for `.loopover-ams.yml`. Mirrors `ParsedMinerGoalSpec`'s present/warnings shape. */
@@ -71,6 +77,7 @@ export const DEFAULT_AMS_POLICY_SPEC: Readonly<AmsPolicySpec> = Object.freeze({
   convergenceThresholds: Object.freeze({ ...DEFAULT_PORTFOLIO_CONVERGENCE_THRESHOLDS }),
   maxIterations: 3,
   maxTurnsPerIteration: 6,
+  selfLoopAutonomy: "auto",
 });
 
 const MAX_AMS_POLICY_SPEC_BYTES = 8_192;
@@ -83,6 +90,7 @@ function cloneDefaultAmsPolicySpec(): AmsPolicySpec {
     convergenceThresholds: { ...DEFAULT_AMS_POLICY_SPEC.convergenceThresholds },
     maxIterations: DEFAULT_AMS_POLICY_SPEC.maxIterations,
     maxTurnsPerIteration: DEFAULT_AMS_POLICY_SPEC.maxTurnsPerIteration,
+    selfLoopAutonomy: DEFAULT_AMS_POLICY_SPEC.selfLoopAutonomy,
   };
 }
 
@@ -101,6 +109,13 @@ function normalizeSlopThreshold(value: unknown, fallback: AmsSlopThreshold, warn
   if (value === undefined || value === null) return fallback;
   if (value === "clean" || value === "low" || value === "elevated" || value === "high") return value;
   warnings.push(`AmsPolicySpec field "slopThreshold" must be one of clean, low, elevated, high; falling back to "${fallback}".`);
+  return fallback;
+}
+
+function normalizeSelfLoopAutonomy(value: unknown, fallback: AutonomyLevel, warnings: string[]): AutonomyLevel {
+  if (value === undefined || value === null) return fallback;
+  if (value === "observe" || value === "auto_with_approval" || value === "auto") return value;
+  warnings.push(`AmsPolicySpec field "selfLoopAutonomy" must be one of observe, auto_with_approval, auto; falling back to "${fallback}".`);
   return fallback;
 }
 
@@ -166,7 +181,8 @@ function hasConfiguredPolicyFields(spec: AmsPolicySpec): boolean {
     spec.convergenceThresholds.maxConsecutiveFailures !== DEFAULT_AMS_POLICY_SPEC.convergenceThresholds.maxConsecutiveFailures ||
     spec.convergenceThresholds.maxReenqueues !== DEFAULT_AMS_POLICY_SPEC.convergenceThresholds.maxReenqueues ||
     spec.maxIterations !== DEFAULT_AMS_POLICY_SPEC.maxIterations ||
-    spec.maxTurnsPerIteration !== DEFAULT_AMS_POLICY_SPEC.maxTurnsPerIteration
+    spec.maxTurnsPerIteration !== DEFAULT_AMS_POLICY_SPEC.maxTurnsPerIteration ||
+    spec.selfLoopAutonomy !== DEFAULT_AMS_POLICY_SPEC.selfLoopAutonomy
   );
 }
 
@@ -209,6 +225,7 @@ export function parseAmsPolicySpec(raw: unknown): ParsedAmsPolicySpec {
       DEFAULT_AMS_POLICY_SPEC.maxTurnsPerIteration,
       warnings,
     ),
+    selfLoopAutonomy: normalizeSelfLoopAutonomy(record.selfLoopAutonomy, DEFAULT_AMS_POLICY_SPEC.selfLoopAutonomy, warnings),
   };
   if (!hasConfiguredPolicyFields(spec)) {
     warnings.push("AmsPolicySpec contained no recognized non-default policy fields; falling back to safe defaults.");

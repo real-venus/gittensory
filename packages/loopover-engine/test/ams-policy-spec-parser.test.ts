@@ -40,6 +40,7 @@ test("parseAmsPolicySpec: valid raw config normalizes every field and keeps non-
     convergenceThresholds: { maxConsecutiveFailures: 5, maxReenqueues: 2 },
     maxIterations: 5,
     maxTurnsPerIteration: 10,
+    selfLoopAutonomy: "observe",
   });
 
   assert.equal(parsed.present, true);
@@ -50,8 +51,25 @@ test("parseAmsPolicySpec: valid raw config normalizes every field and keeps non-
     convergenceThresholds: { maxConsecutiveFailures: 5, maxReenqueues: 2 },
     maxIterations: 5,
     maxTurnsPerIteration: 10,
+    selfLoopAutonomy: "observe",
   });
   assert.deepEqual(parsed.warnings, []);
+});
+
+test("parseAmsPolicySpec: selfLoopAutonomy accepts observe/auto_with_approval/auto, defaults to auto, and rejects other values (#6559)", () => {
+  assert.equal(parseAmsPolicySpec({ selfLoopAutonomy: "observe" }).spec.selfLoopAutonomy, "observe");
+  assert.equal(parseAmsPolicySpec({ selfLoopAutonomy: "auto_with_approval" }).spec.selfLoopAutonomy, "auto_with_approval");
+  assert.equal(parseAmsPolicySpec({ selfLoopAutonomy: "auto", submissionMode: "enforce" }).spec.selfLoopAutonomy, "auto");
+  // A config setting only selfLoopAutonomy to a non-default value is recognized as present.
+  assert.equal(parseAmsPolicySpec({ selfLoopAutonomy: "observe" }).present, true);
+  // Default is "auto"; absent field falls back silently.
+  assert.equal(DEFAULT_AMS_POLICY_SPEC.selfLoopAutonomy, "auto");
+  assert.equal(parseAmsPolicySpec({ submissionMode: "enforce" }).spec.selfLoopAutonomy, "auto");
+  // Invalid → warning + default; null → silent fallback.
+  const invalid = parseAmsPolicySpec({ selfLoopAutonomy: "bogus" });
+  assert.equal(invalid.spec.selfLoopAutonomy, "auto");
+  assert.match(invalid.warnings.join(" "), /selfLoopAutonomy/i);
+  assert.ok(!parseAmsPolicySpec({ selfLoopAutonomy: null, submissionMode: "enforce" }).warnings.join(" ").match(/selfLoopAutonomy/i));
 });
 
 test("parseAmsPolicySpec: maxIterations/maxTurnsPerIteration floor to whole counts and reject negative/non-numeric values", () => {
