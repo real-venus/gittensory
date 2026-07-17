@@ -275,6 +275,10 @@ export async function startFixtureServer(
       response.end(JSON.stringify({ ...openPrMonitorFixture(), ...(options.openPrMonitor ?? {}) }));
       return;
     }
+    if (request.url === "/v1/contributors/JSONbored/profile" && request.method === "GET") {
+      response.end(JSON.stringify(contributorProfileFixture()));
+      return;
+    }
     if (request.url === "/v1/contributors/JSONbored/repos/JSONbored/gittensory/decision" && request.method === "GET") {
       if (options.repoDecisionStatus && options.repoDecisionStatus >= 400) {
         response.statusCode = options.repoDecisionStatus;
@@ -658,6 +662,18 @@ export function localBranchAnalysisFixture() {
       blockers: [],
       warnings: [],
     },
+  };
+}
+
+/** Mirrors the ContributorProfile shape buildContributorProfile (packages/loopover-engine/src/signals/engine.ts) returns. */
+export function contributorProfileFixture() {
+  return {
+    login: "JSONbored",
+    generatedAt: "2026-06-01T00:00:00.000Z",
+    summary: "Public contributor profile for JSONbored.",
+    github: { topLanguages: ["TypeScript", "Rust"] },
+    outcomes: { mergedPullRequests: 12, resolvedPullRequests: 15 },
+    repoStats: [{ repoFullName: "JSONbored/gittensory", mergedPullRequests: 5 }],
   };
 }
 

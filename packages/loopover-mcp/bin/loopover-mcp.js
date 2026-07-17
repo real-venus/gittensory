@@ -81,6 +81,7 @@ const CLI_COMMAND_SPEC = {
   "init-client": [],
   "decision-pack": [],
   "repo-decision": [],
+  "contributor-profile": [],
   "monitor-open-prs": [],
   "analyze-branch": [],
   preflight: [],
@@ -2931,6 +2932,7 @@ async function runCli(args) {
   if (command === "issue-slop") return issueSlopCli(args.slice(1));
   if (command === "decision-pack") return decisionPackCli(options);
   if (command === "repo-decision") return repoDecisionCli(options);
+  if (command === "contributor-profile") return contributorProfileCli(options);
   if (command === "monitor-open-prs") return monitorOpenPrsCli(options);
   if (command === "review-pr") return reviewPrCli(options);
   if (command !== "analyze-branch" && command !== "preflight") {
@@ -3327,6 +3329,34 @@ async function monitorOpenPrsCli(options) {
     process.stdout.write(`${sanitizePlainTextTerminalOutput(heading)}\n`);
     for (const step of pr.nextSteps ?? []) process.stdout.write(`  - ${sanitizePlainTextTerminalOutput(step)}\n`);
   }
+}
+
+function printContributorProfileHelp() {
+  process.stdout.write(
+    [
+      "Usage: loopover-mcp contributor-profile --login <github-login> [--json]",
+      "",
+      "Fetch your own public contributor profile for a GitHub login.",
+      "Mirrors the loopover_get_contributor_profile MCP tool and GET /v1/contributors/{login}/profile. No source upload.",
+      "",
+      "Pass --json for machine-readable output.",
+    ].join("\n") + "\n",
+  );
+}
+
+async function contributorProfileCli(options) {
+  if (options.help === true) return printContributorProfileHelp();
+  const login = options.login ?? process.env.LOOPOVER_LOGIN ?? process.env.GITHUB_LOGIN;
+  if (!login) throw new Error("Pass --login <github-login> or set LOOPOVER_LOGIN.");
+  const payload = await getContributorProfile(login);
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    return;
+  }
+  // #6261: `login` is the user's own --login/env value; the summary is the API's to compose, so it is sanitized
+  // before it reaches the terminal (the same discipline decision-pack / monitor-open-prs apply to API-chosen text).
+  process.stdout.write(`Contributor profile: ${login}\n`);
+  if (payload?.summary) process.stdout.write(`${sanitizePlainTextTerminalOutput(payload.summary)}\n`);
 }
 
 function printRepoDecisionHelp() {
@@ -3807,6 +3837,7 @@ function printHelp() {
   loopover-mcp init-client --print codex|claude|cursor|mcp|vscode [--agent-profile miner-planner|maintainer-triage|repo-owner-intake] [--json]
   loopover-mcp decision-pack --login <github-login> [--json]
   loopover-mcp repo-decision --login <github-login> --repo owner/repo [--json]
+  loopover-mcp contributor-profile --login <github-login> [--json]
   loopover-mcp monitor-open-prs --login <github-login> [--json]
   loopover-mcp analyze-branch --login <github-login> [--repo owner/repo] [--base origin/main] [--branch-eligibility eligible|ineligible|unknown] [--pending-merged-prs 3] [--expected-open-prs 0] [--projected-credibility 0.8] [--scenario-note "..."] [--validation "passed|npm test|summary"] [--format table] [--json]
   loopover-mcp preflight --login <github-login> [--repo owner/repo] [--base origin/main] [--branch-eligibility eligible|ineligible|unknown] [--pending-merged-prs 3] [--expected-open-prs 0] [--projected-credibility 0.8] [--validation "passed|npm test|summary"] [--format table] [--json]
@@ -3825,7 +3856,7 @@ function printHelp() {
   LOOPOVER_PROFILE
   LOOPOVER_CONFIG_PATH or LOOPOVER_CONFIG_DIR
   LOOPOVER_API_TOKEN, LOOPOVER_MCP_TOKEN, LOOPOVER_TOKEN, or a session from loopover-mcp login
-  LOOPOVER_LOGIN or GITHUB_LOGIN (default --login for analyze-branch, preflight, review-pr, decision-pack, repo-decision, monitor-open-prs, and agent plan/packet)
+  LOOPOVER_LOGIN or GITHUB_LOGIN (default --login for analyze-branch, preflight, review-pr, decision-pack, repo-decision, contributor-profile, monitor-open-prs, and agent plan/packet)
   GITHUB_TOKEN for non-interactive login bootstrap
   GITTENSOR_SCORE_PREVIEW_CMD
   GITTENSOR_ROOT
@@ -4951,6 +4982,12 @@ function repoDecisionToolSummary(login, repoFullName, payload) {
 
 function getOpenPrMonitor(login) {
   return apiGet(`/v1/contributors/${encodeURIComponent(login)}/open-pr-monitor`);
+}
+
+// #6737: CLI mirror for loopover_get_contributor_profile — the same GET /v1/contributors/:login/profile the MCP
+// tool serves, via the same /v1/contributors/:login/... route family + login-resolution decision-pack already uses.
+function getContributorProfile(login) {
+  return apiGet(`/v1/contributors/${encodeURIComponent(login)}/profile`);
 }
 
 // Mirror the API's own `summary` when it sends one, so the CLI and the loopover_monitor_open_prs MCP
