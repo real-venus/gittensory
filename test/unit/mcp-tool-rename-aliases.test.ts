@@ -13,6 +13,7 @@
 // (#6752 registered the loopover_build_results_payload CLI mirror, taking the count from 67 to 68.)
 // (#6755 registered the loopover_intake_idea CLI mirror, taking the count from 68 to 69.)
 // (#6915 registered the loopover_simulate_open_pr_pressure CLI mirror, taking the count from 69 to 70.)
+// (#6753 registered the loopover_build_progress_snapshot CLI mirror, taking the count from 70 to 71.)
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { mkdtempSync, rmSync } from "node:fs";
