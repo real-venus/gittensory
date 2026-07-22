@@ -9,13 +9,18 @@ import {
   CONTRIBUTION_PROFILE_STORE_TABLE,
   emptyContributionProfile,
 } from "../../packages/loopover-miner/lib/contribution-profile.js";
-import {
+// #7795: import the .ts SOURCE via a non-literal specifier so the new isValidRepoSegment guard is actually
+// instrumented -- a `.js`/extensionless import loads the build-time `.js` artifact and leaves coverage.include's
+// `.ts` entry at 0% (the same `.js`-vs-`.ts` coverage trap fixed for replay-snapshot in #7796). The variable
+// specifier keeps tsc happy (a literal `.ts` import is TS5097).
+const CONTRIBUTION_PROFILE_CACHE_MODULE = "../../packages/loopover-miner/lib/contribution-profile-cache.ts";
+const {
   closeDefaultContributionProfileCache,
   getCachedContributionProfile,
   initContributionProfileCache,
   putCachedContributionProfile,
   resolveContributionProfileCacheDbPath,
-} from "../../packages/loopover-miner/lib/contribution-profile-cache.js";
+} = (await import(CONTRIBUTION_PROFILE_CACHE_MODULE)) as typeof import("../../packages/loopover-miner/lib/contribution-profile-cache.js");
 
 const roots: string[] = [];
 const stores: Array<{ close(): void }> = [];
@@ -43,6 +48,13 @@ afterEach(() => {
 });
 
 describe("contribution-profile cache store (#6797)", () => {
+  it("rejects a `.`/`..`/control-char repo segment before it becomes a SQLite key (#7795)", () => {
+    const store = tempStore();
+    for (const repo of ["owner/..", "../repo", "owner/.", "own\ter/repo"]) {
+      expect(() => store.get(repo)).toThrow("invalid_repo_full_name");
+    }
+  });
+
   it("resolves the DB path from the env override then the config-dir convention", () => {
     // The explicit-DB override is returned verbatim (platform-independent); the config-dir path is asserted by
     // suffix so the assertion is stable across `/` and `\` separators.

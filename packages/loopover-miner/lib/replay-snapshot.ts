@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { isValidRepoSegment } from "./repo-clone.js";
 import { removeWorktree } from "@loopover/engine";
 import type { WorktreeExecFn, WorktreeRemoveResult } from "@loopover/engine";
 import { openLocalStoreAdapter, resolveLocalStoreDbPath, normalizeLocalStoreDbPath } from "./local-store.js";
@@ -72,6 +73,9 @@ function normalizeRepoFullName(repoFullName: string): string {
   if (typeof repoFullName !== "string") throw new Error("invalid_repo_full_name");
   const [owner, repo, extra] = repoFullName.trim().split("/");
   if (!owner || !repo || extra !== undefined) throw new Error("invalid_repo_full_name");
+  // #7795: reject a `.`/`..`/control-char owner or repo segment before it's persisted as a SQLite key or echoed
+  // through the CLI, matching the isValidRepoSegment guard #5831/#7525 added to the sibling parsers.
+  if (!isValidRepoSegment(owner) || !isValidRepoSegment(repo)) throw new Error("invalid_repo_full_name");
   return `${owner}/${repo}`;
 }
 

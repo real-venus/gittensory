@@ -4,6 +4,7 @@
 // local-store.js pattern (openLocalStoreDb + resolveLocalStoreDbPath + the schema-version stamp) so it is
 // picked up by `doctor`'s store-integrity sweep and `migrate` the same way its siblings are.
 import type { CachedContributionProfile, ContributionProfile } from "./contribution-profile.js";
+import { isValidRepoSegment } from "./repo-clone.js";
 import {
   CONTRIBUTION_PROFILE_CACHE_TTL_MS,
   CONTRIBUTION_PROFILE_STORE_TABLE,
@@ -58,6 +59,10 @@ function normalizeRepoFullName(repoFullName: unknown): string {
   const [owner, repo, extra] = repoFullName.trim().split("/");
   if (!owner || !repo || extra !== undefined)
     throw new Error("invalid_repo_full_name");
+  // #7795: reject a `.`/`..`/control-char owner or repo segment before it's persisted as a SQLite key or
+  // echoed through the CLI, matching the isValidRepoSegment guard #5831/#7525 already added to the sibling
+  // parsers (claim-ledger.ts et al.).
+  if (!isValidRepoSegment(owner) || !isValidRepoSegment(repo)) throw new Error("invalid_repo_full_name");
   return `${owner}/${repo}`;
 }
 

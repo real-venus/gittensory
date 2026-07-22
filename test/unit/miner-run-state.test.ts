@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
+// #7795: import the .ts SOURCE via a non-literal specifier so the new isValidRepoSegment guard is instrumented
+// -- a `.js`/extensionless import loads the build-time `.js` and leaves coverage.include's `.ts` entry at 0%
+// (the same `.js`-vs-`.ts` coverage trap fixed for replay-snapshot in #7796; the variable specifier avoids TS5097).
+const RUN_STATE_MODULE = "../../packages/loopover-miner/lib/run-state.ts";
+const {
   RUN_STATES,
   closeDefaultRunStateStore,
   getRunState,
@@ -11,7 +15,7 @@ import {
   listRunStates,
   resolveRunStateDbPath,
   setRunState,
-} from "../../packages/loopover-miner/lib/run-state.js";
+} = (await import(RUN_STATE_MODULE)) as typeof import("../../packages/loopover-miner/lib/run-state.js");
 
 const roots: string[] = [];
 
@@ -30,6 +34,17 @@ afterEach(() => {
 });
 
 describe("loopover-miner run-state store (#2289)", () => {
+  it("rejects a `.`/`..`/control-char repo segment before it becomes a SQLite key (#7795)", () => {
+    const store = initRunStateStore(join(tempRoot(), "run-state.sqlite3"));
+    try {
+      for (const repo of ["owner/..", "../repo", "owner/.", "own\ter/repo"]) {
+        expect(() => store.getRunState(repo)).toThrow("invalid_repo_full_name");
+      }
+    } finally {
+      store.close();
+    }
+  });
+
   it("keeps the package engine floor aligned with unflagged node:sqlite support", () => {
     const packageJson = JSON.parse(
       readFileSync("packages/loopover-miner/package.json", "utf8"),

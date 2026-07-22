@@ -76,6 +76,17 @@ afterEach(() => {
 });
 
 describe("planReplaySnapshotPath (#3010) — pure, deterministic", () => {
+  it("rejects a `.`/`..`/control-char repoFullName segment before it becomes a SQLite key (#7795)", () => {
+    const store = openReplaySnapshotStore(join(mkdtempSync(join(tmpdir(), "loopover-miner-replay-7795-")), "db.sqlite3"));
+    try {
+      for (const repo of ["owner/..", "../repo", "owner/.", "own\ter/repo"]) {
+        expect(() => store.getSnapshot(repo, "abcd123")).toThrow("invalid_repo_full_name");
+      }
+    } finally {
+      store.close();
+    }
+  });
+
   it("same (repoPath, commitSha) always yields the same path", () => {
     const a = planReplaySnapshotPath({ repoPath: "/repo", commitSha: "abc123" });
     expect(a.replaceAll("\\", "/")).toBe(`/repo/${REPLAY_SNAPSHOT_SUBDIR}/abc123`);

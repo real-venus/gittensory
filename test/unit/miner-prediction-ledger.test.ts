@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import { initPredictionLedger, resolvePredictionLedgerDbPath } from "../../packages/loopover-miner/lib/prediction-ledger.js";
+// #7795: import the .ts SOURCE via a non-literal specifier so the new isValidRepoSegment guard is instrumented
+// -- a `.js`/extensionless import loads the build-time `.js` and leaves coverage.include's `.ts` entry at 0%
+// (the same `.js`-vs-`.ts` coverage trap fixed for replay-snapshot in #7796; the variable specifier avoids TS5097).
+const PREDICTION_LEDGER_MODULE = "../../packages/loopover-miner/lib/prediction-ledger.ts";
+const { initPredictionLedger, resolvePredictionLedgerDbPath } = (await import(PREDICTION_LEDGER_MODULE)) as typeof import("../../packages/loopover-miner/lib/prediction-ledger.js");
 import { readSchemaVersion } from "../../packages/loopover-miner/lib/schema-version.js";
 
 const ledgers: Array<{ close: () => void }> = [];
@@ -33,6 +37,13 @@ const VALID = {
 };
 
 describe("miner prediction ledger (#4263)", () => {
+  it("rejects a `.`/`..`/control-char repo segment before it's persisted (#7795)", () => {
+    const ledger = tempLedger();
+    for (const repoFullName of ["owner/..", "../repo", "owner/.", "own\ter/repo"]) {
+      expect(() => ledger.appendPrediction({ ...VALID, repoFullName })).toThrow("invalid_repo_full_name");
+    }
+  });
+
   it("resolvePredictionLedgerDbPath honors the explicit DB, config-dir, XDG, then home default", () => {
     expect(resolvePredictionLedgerDbPath({ LOOPOVER_MINER_PREDICTION_LEDGER_DB: "/custom/pred.sqlite3" })).toBe("/custom/pred.sqlite3");
     expect(resolvePredictionLedgerDbPath({ LOOPOVER_MINER_CONFIG_DIR: "/state" })).toBe(join("/state", "prediction-ledger.sqlite3"));
